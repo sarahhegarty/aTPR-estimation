@@ -1,0 +1,181 @@
+---
+title: "12 Adjusted TPR"
+subtitle: "aTPR - PNAS manuscript (initial submission) Figure 3"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, include= FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(fairRisk)
+
+#folder = '/Users/Sarah/Box/Research/Dissertation/12 Adjusted TPR/numerical/12.05.01/rwdout/'
+folder = 'Z:/D12-aTPR/12.05.01/rwdout/'
+simlab = 'rwd03-palliative-connect-replicate-original-'
+```
+
+
+```{r}
+# Read in Data
+load(paste0(folder,"pallconnect.RData"))
+
+# ---------------------------------------------------------------------- #
+# --        PANEL C: DELTA TPR PLOTS AS FUNCTION OF TAU               -- #
+# ---------------------------------------------------------------------- #
+taus = seq(0.01,0.99,0.01)
+
+gender.naive <- naiveTPR(data=pallconnect
+                         , risk=preds_orig
+                         , response=X6_month_mortality
+                         , groupvar = GENDER_CODE
+                         , taus=taus
+                         , se.boot = FALSE)$TPR %>%
+                      rename(s = GENDER_CODE)
+
+
+gender.adj <- NULL
+for(caldegree in c(1,2)){
+  for(dendegree in c(1,2)){
+    
+    gender.adjK <- aTPR(data= pallconnect
+                        ,groupvar = GENDER_CODE
+                        ,ref = "M"
+                        ,response = X6_month_mortality
+                        ,risk = preds_orig
+                        ,taus = taus
+                        ,calmethod = 'logit'
+                        ,list(caldegree, TRUE)
+                        ,drmethod = 'logit'
+                        ,dr.args = list(dendegree)
+                        ,se.boot = FALSE
+                        )$aTPR %>%
+                      mutate(cal = if_else(caldegree == 1,"llogit","qlogit")
+                             ,den = if_else(dendegree == 1,"llogit","qlogit"))
+          
+    gender.adj <- gender.adj %>%
+                      bind_rows(gender.adjK)
+  }
+}
+
+# Merge in naive estimates to each row and compute differences
+diffs.gender <- gender.adj %>%
+                    filter(s != 'M') %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(cal,"+",den)) %>%
+                    bind_rows(gender.naive %>%
+                                  filter(s != 'M') %>%
+                                  select(s, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = ' naive')
+                    ) %>%
+                left_join(gender.naive  %>%
+                            filter(s == 'M') %>%
+                            select(tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref))
+
+# Get mean and CIs for delta
+# diffs.gender.sum <- diffs.gender %>%
+#                       group_by(s, tau, estimate, method, calmethod, densitymethod) %>%
+#                       summarize(n = n()
+#                                 ,delta.boot.mean = mean(delta)
+#                                 ,delta.boot.lower =quantile(delta,0.025)
+#                                 ,delta.boot.upper = quantile(delta, 0.975)
+#                                 )
+# diffs.gender.sum %>% pull(n) %>% unique()
+
+panelC <- diffs.gender %>%
+  ggplot(aes(tau,delta,group=method,linetype=method)) + 
+    #geom_point() + 
+    geom_line() +
+    ylim(c(-0.2,0.2)) +
+    xlab(expression(paste("Decision Threshold, ",tau))) +
+    ylab(expression(paste('Difference in (a)TPRs, ',Delta))) +
+  theme_bw()+ 
+    ggtitle("C")
+panelC
+
+# ---------------------------------------------------------------------- #
+# --        PANEL B: DENSITY PLOTS OF CALIBRATED RISKS                -- #
+# ---------------------------------------------------------------------- #
+
+# Estimate r_s() (calibration model)
+ex.cal <- calibrateRiskCV(data = pallconnect, groupvar = GENDER_CODE
+                          ,response = X6_month_mortality, risk = preds_orig
+                          ,transform = TRUE, method = 'logit', args = list(2)
+                          ,cv = TRUE, k=5, quietly = FALSE)
+
+panelB <- ex.cal$caldf %>%
+  mutate(s = if_else(s == 'M', 'Male', 'Female')) %>%
+  ggplot(aes(rs.gX, group = s,color=s)) +
+  geom_density() + 
+  xlab(expression(paste('Re-calibrated Risk Score, ',r^s,'{g(X)}'))) +
+  ylab('Density') +
+  ggtitle("B") +
+  theme_bw()+ 
+  scale_color_manual(name='Sex',values = c('Male' = 'deepskyblue', 'Female' = 'maroon')) 
+
+panelB
+
+
+# ---------------------------------------------------------------------- #
+# --        PANEL A: CALIBRATION PLOTS                                -- #
+# ---------------------------------------------------------------------- #
+pallconnect %>% pull(preds_orig) %>% quantile(seq(0,1,0.05))
+pc.cal <- ex.cal$caldf %>%
+            mutate(bin = if_else(gX <= 0.1,round_any(gX,0.005),round_any(gX,0.05))) %>%
+            group_by(s, bin) %>%
+            summarize(y.obs = mean(y)
+                      ,pred = mean(gX))
+
+caldf <- ex.cal$caldf %>%
+            mutate(pred = gX
+                    ,y.obs = rs.gX)
+
+panelA <- pc.cal %>%
+   # mutate(GENDER_CODE = if_else(GENDER_CODE == 'M', 'Male', 'Female')) %>%
+    ggplot(aes(pred,y.obs,group=s,color=s)) +
+    geom_point(show.legend = FALSE)+
+    geom_abline(slope=1,intercept=0,linetype = 'dashed') +
+    xlab('Risk Score, g(X)') +
+    ylab("Observed Event Rate") +
+    scale_color_manual(name='Sex',values = c('M' = 'deepskyblue', 'F' = 'maroon')) +
+  theme_bw()+ 
+    geom_line(data = caldf,aes(pred,y.obs, group = s, color = s),show.legend = FALSE) +
+    ggtitle('A')
+
+panelA
+
+
+# ---------------------------------------------------------------------- #
+# --      ASSEMBLE                                                    -- #
+# ---------------------------------------------------------------------- #
+
+figout = folder
+# main 
+(panelA   | panelB) / panelC + plot_layout(guides='collect') 
+ggsave(file=paste0(figout,"PC-Gender-tripanel-PNAS.eps"), dpi=300,height=6,width=7)
+
+(panelA   | panelB) / panelC + plot_layout(guides='collect') &
+  theme(legend.position = 'bottom'
+        ,legend.direction = 'vertical')
+ggsave(file=paste0(figout,"PC-Gender-tripanel-PNAS-bottomlegend.eps"), dpi=300,height=6,width=6)
+
+
+(panelA   | panelB) / panelC + plot_layout(guides='collect') &
+  theme(legend.position = 'bottom'
+        ,legend.direction = 'horizontal'
+        ,legend.box ='vertical'
+        ,legend.spacing.y = unit(1,"pt"))
+ggsave(file=paste0(figout,"PC-Gender-tripanel-PNAS-bottomlegend2.eps"),dpi=300,height=6,width=6)
+```

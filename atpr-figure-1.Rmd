@@ -1,0 +1,218 @@
+---
+title: "12 Adjusted TPR"
+subtitle: "aTPR - PNAS manuscript (initial submission) Figure 1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+```
+
+```{r}
+set.seed(336)
+
+N = 10000
+
+pi1 <- rbeta(N,2,8)
+pi2.eq <- rbeta(N,2,8)
+pi2.uneq <- rbeta(N,4,8)
+
+eps1 <- rnorm(N,0,0.1)
+eps2a <- rnorm(N,0,0.1)
+eps2b <- rnorm(N,0,0.2)
+
+scene22.eqvar <- data.frame(s = rep(1:2,each = N)
+                      ,pi = c(pi1,pi2.eq))
+
+scene22.eqvar$y <- rbinom(2*N,1,scene22.eqvar$pi)
+
+
+scene24.eqvar <- data.frame(s = rep(1:2,each = N)
+                      ,pi = c(pi1,pi2.uneq))
+
+scene24.eqvar$y <- rbinom(2*N,1,scene24.eqvar$pi)
+
+scene24.eqvar <- scene24.eqvar %>%
+                    mutate(color= if_else(s == 1,'Group 1','Group 2'))
+dens24 <- scene24.eqvar %>%
+            ggplot(aes(pi, group = s,color=color)) +
+            geom_density() + 
+            xlab(expression(paste("True Risk, ",pi))) + 
+            ylab("Density") +
+            scale_color_manual(name='Group',values = c('Group 1' = 'deepskyblue', 'Group 2' = 'maroon')) +
+            scale_linetype_manual(name='EstimateType',values = c('Adjusted' = 'dashed', 'Naive' = 'dotted', 'Benchmark' = 'solid'))  + 
+            theme_bw() +
+            ggtitle("B2")
+     
+          
+dens22 <- scene22.eqvar %>%
+            mutate(color = if_else(s == 1,'Group 1','Group 2')) %>%
+            ggplot(aes(pi, group = s,color=color)) +
+            geom_density() +
+            xlab(expression(paste("True Risk, ",pi))) + 
+            ylab("Density") +
+            scale_color_manual(name='Group',values = c('Group 1' = 'deepskyblue', 'Group 2' = 'maroon')) + 
+            theme_bw() + 
+            ggtitle("B1")
+
+dens22; dens24
+```
+
+```{r}
+    
+logit <- function(z){
+  log(z/(1-z))
+}
+cloglog <- function(z){
+  log(-log(1-z))
+}
+expit <- function(z){
+  exp(z)/(1+exp(z))
+}
+
+caldf = NULL
+for(theta.b in c( 0.8, 1)){
+  for(theta.a in c(0,-0.25)){
+    
+    pi.range = seq(0,1,0.001)
+    logit.gX_logit = theta.a + theta.b*logit(pi.range) 
+      
+    thisfit <- data.frame(pi = pi.range
+                          , gX1_logit = expit(logit(pi.range))
+                          , gX2_logit = expit(logit.gX_logit)
+                          , theta.a =theta.a
+                          , theta.b = theta.b) %>%
+               mutate(theta2 = paste0("(",theta.a,",",theta.b,")") )
+    
+    caldf <- caldf %>%
+                bind_rows(thisfit)
+    }
+  }
+```
+
+```{r}
+panelA <- caldf %>%
+    mutate(h.theta =paste0("(",theta.a,", ",theta.b,")")
+             ,fairness = if_else(theta2 == '(1,0)',"fair","unfair")
+             ,Group= '2') %>%
+        ggplot(aes(pi,gX1_logit, group = h.theta, linetype = h.theta))+ 
+            geom_line(color='deepskyblue',show.legend=FALSE) + 
+        geom_line(aes(pi,gX2_logit, group = h.theta ,linetype=h.theta),color='maroon',show.legend = FALSE) + 
+            ylab("Risk Score, g(X)") + 
+            xlab(expression(paste("True Risk, ",pi))) + 
+            ggtitle("A")+
+            ylim(c(0,1))  +
+            theme_bw() +
+            scale_linetype_manual(name = 'Calibration Parameters',
+                                  values = c('(-0.25, 0.8)' = 'solid'
+                                             , '(-0.25, 1)' = 'dotdash'
+                                             , '(0, 0.8)' = 'twodash'
+                                             , '(0, 1)' = 'dotted'))  
+
+panelA
+```
+
+
+
+```{r}
+TPRplot <- function(data
+                    , tau = seq(0.01,0.99,0.01)
+                    , theta.a
+                    , theta.b
+                    , h){
+        TPRs <- NULL
+          for(a in theta.a){
+            for(b in theta.b){
+            print(paste("a = ",a,"; b = ",b))
+              
+              if(h == "logit"){
+                  thisrun <- data %>%
+                            filter(s==1) %>%
+                            mutate(gX = expit(logit(pi)) ) %>%
+                            bind_rows(data %>% filter(s == 2) %>%
+                                      mutate(gX = expit(a +  b * logit(pi))))
+                  
+              }else if(h == 'cloglog'){
+                  thisrun <- data %>%
+                            filter(s==1) %>%
+                            mutate(gX = expit(cloglog(pi)) ) %>%
+                          bind_rows(data %>% filter(s == 2) %>%
+                                      mutate(gX = expit(a + b * cloglog(pi))))
+              }# close else-if
+              
+              thisTPR <- NULL
+              for(Tau in tau){
+                  tpr <- thisrun %>%
+                            group_by(s) %>%
+                            mutate(highrisk = if_else(gX > Tau,1,0)) %>%
+                            dplyr::summarise(num = mean(y * highrisk)
+                                      ,denom =  mean(y)) %>%
+                            mutate(TPR = num/denom) %>%
+                            pull(TPR)
+                  
+                  otpr = data.frame(h=h,a=a, b=b, tau = Tau,TPR1 = tpr[1],TPR2 = tpr[2])
+                  thisTPR <- thisTPR %>%
+                            bind_rows(otpr)
+                } # close loop - tau
+              
+             thisTPR <- thisTPR %>%
+                  mutate(DeltaTPR = TPR2 - TPR1)
+   
+              TPRs <- TPRs %>%
+                  bind_rows(thisTPR)
+            } # close loop - theta.b
+          } # close loop - theta.a
+  return(TPRs)
+} # close function
+L1_22 = TPRplot(scene22.eqvar,theta.b = c(1,0.8), theta.a = c(0,-0.25), h = "logit")             
+
+L1_24 = TPRplot(scene24.eqvar,theta.b = c(1,0.8), theta.a = c(0,-0.25), h = "logit")             
+
+TPRs_L1_alpha22 =  L1_22 %>%
+                # mutate(h.theta =paste0(a," + ",b,"*logit(pi)") ) %>%
+                mutate(h.theta =paste0("(",a,", ",b,")") ) %>%
+                ggplot(aes(tau,DeltaTPR,group=h.theta,linetype=h.theta)) + 
+                #geom_point() + 
+                geom_line() +
+                ylim(c(-0.25,0.5)) +
+                xlab(expression(paste("Decision Threshold, ",tau))) +
+                ylab(expression(paste("Difference in TPRs, ",Delta))) +
+                ggtitle("C1") +
+                theme_bw() +
+                #labs(linetype = "logit{g(X)}=")
+            #    labs(linetype = 'Calibration Parameters')+
+            scale_linetype_manual(name = 'Calibration Parameters',
+                                  values = c('(-0.25, 0.8)' = 'solid'
+                                             , '(-0.25, 1)' = 'dotdash'
+                                             , '(0, 0.8)' = 'twodash'
+                                             , '(0, 1)' = 'dotted')) 
+TPRs_L1_alpha22
+
+TPRs_L1_alpha24 =  L1_24 %>%
+                #mutate(h.theta =paste0(a," + ",b,"*logit(pi)") ) %>%
+                mutate(h.theta =paste0("(",a,", ",b,")") ) %>%
+                ggplot(aes(tau,DeltaTPR,group=h.theta,linetype=h.theta)) + 
+                geom_line() +
+                ylim(c(-0.25,0.5)) +
+                xlab(expression(paste("Decision Threshold, ",tau))) +
+                ylab(expression(paste("Difference in TPRs, ",Delta))) +
+                ggtitle("C2") +
+                theme_bw() +  
+                scale_linetype_manual(name = 'Calibration Parameters',
+                                  values = c('(-0.25, 0.8)' = 'solid'
+                                             , '(-0.25, 1)' = 'dotdash'
+                                             , '(0, 0.8)' = 'twodash'
+                                             , '(0, 1)' = 'dotted')) 
+```
+
+for paper
+```{r}
+panelA / (dens22 | dens24) / (TPRs_L1_alpha22 + TPRs_L1_alpha24) + plot_layout(guides ='collect') & theme(legend.position = 'bottom', legend.direction = 'horizontal', legend.box = 'vertical', legend.spacing.y = unit(1,"pt"))
+ggsave(file="aTPR-illustration-5panel.eps",dpi=300,height=7,width=6) 
+```
