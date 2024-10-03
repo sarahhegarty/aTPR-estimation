@@ -1,0 +1,38 @@
+---
+title: "Run All Delta Plots for sim01-aTPR-alpha24 [12.05.01]"
+author: "Sarah Hegarty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r outersetup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+outer_start <- Sys.time()
+```
+
+# Delta Plots
+```{r outer_sim_1k, results = 'hide'}
+for(n in c('1k','2k','5k')){
+  for(sigeps in c(0.1, 0.2)){
+    for(h in c('logit','cloglog')){
+      rmarkdown::render("Supplemental-Sim-DeltaPlots-Template.Rmd"
+                  , params = list(simid= '12.05.01'
+                                  ,simlab= 'sim01-aTPR-alpha24'
+                                  ,nickname= n
+                                  ,taulist= 0.2
+                                  ,sigeps2= sigeps
+                                  ,h2= h)
+                  ,output_file =paste0('Supplemental-Sim-DeltaPlots_aTPR-alpha24-'
+                                       ,n,'-',toupper(substr(h,1,1)),sigeps*10
+                                       ,'.html')
+                  )
+    }
+  }
+}
+```
+
+# Total Run Time
+```{r outer_runtime}
+Sys.time() - outer_start
+```
