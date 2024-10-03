@@ -1,0 +1,406 @@
+---
+title: "sim01-alpha24-1k"
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+params:
+  nickname: '1k'
+  n2: 1000
+  bootJ: 500
+  seed: 24304
+  taulist: !r seq(0.1,0.3,0.1)
+---
+
+```{r sim_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+timestart = Sys.time()
+simid = paste0('sim01-aTPR-alpha24-',params$nickname)
+folder = 'simout/'
+```
+
+
+
+# Load packages
+```{r sim_libs}
+library(tidyr)
+library(dplyr)
+library(stats)
+library(ggplot2)
+library(patchwork)
+
+library(microbenchmark) 
+library(parallel) 
+library(foreach)
+library(iterators) 
+library(doParallel)
+```
+
+# Load fairRisk package and other custom functions
+```{r sim_loadfunc}
+library(fairRisk)
+
+source('simfuncs/dataGen.R')
+source('simfuncs/getTheoretical.R')
+```
+
+# Session Info
+```{r sim_session}
+sessionInfo()
+```
+
+# Render parameters
+```{r sim_parms}
+params
+```
+
+# Define data generation parameter settings
+```{r sim_parms_datagen, eval = TRUE}
+# Define data generation settings
+set_n = list(c(1000,params$n2))
+set_alpha = list(c(2,4))
+set_beta = list(c(8,8))
+set_sigeps = list(c(0.1,0.1),c(0.1,0.2))
+set_h = list(c("logit","logit"),c("cloglog","cloglog"))
+set_theta.b = list(c(1,1),c(1,0.8),c(1,0.6))
+set_theta.a = list(c(0,0),c(0,-0.25),c(0,-0.5),c(0,0.25),c(0,0.5))
+
+# Enumerate Data Generation Scenarios
+settings <- expand.grid(set_theta.a, set_theta.b, set_h, set_sigeps,  set_beta, set_alpha, set_n)
+colnames(settings) <- c('theta.a','theta.b','h','sigeps','beta','alpha','n')
+settings <- settings %>%
+              dplyr::select(n, alpha, beta, h, sigeps, theta.b, theta.a)
+nSettings <- dim(settings)[1]
+settings$setting_id <- seq(1,nSettings,1)
+save(settings,file=paste0('simout/',simid,'_settings.RData'))
+```
+
+# Define additional parameters for MC replicates
+```{r sim_parms_mc}
+# Define estimation parameters
+mytau = params$taulist
+naivelist = c('naive (np)','naive (mb-llogit)','naive (mb-qlogit)','theoretical (naive)')
+J = params$bootJ
+largeN = 10^6
+master.seed = params$seed
+```
+
+# Define run once:  
+```{r sim_defrunonce}
+runOnce <- function(ns
+                    ,par1
+                    ,par2
+                    ,abs1
+                    ,abs2
+                    ,hs
+                    ,taus
+                    ,naiveOnly=FALSE){
+  
+      # Generate data
+      df.j <- dataGen(ngps = 2 # number of groups
+                    , n = ns # sample sizes for group 1, 2
+                    , alpha = c(par1[1],par2[1]) # beta distribution shape parameter
+                    , beta = c(par1[2],par2[2]) # beta distribution scale parameter
+                    , sigeps = c(abs1[3],abs2[3]) # noise
+                    , theta_a = c(abs1[1],abs2[1]) # calibration intercept
+                    , theta_b = c(abs1[2],abs2[2]) # calibration slope
+                    , h = hs)
+       
+      # get naive estimates using non-parametric estimator
+      ntpr <- naiveTPR(data=df.j, risk = gX, response= y, groupvar = s, taus =taus )$TPR %>%
+                pivot_wider(names_from = s, values_from = TPR, names_prefix = 'TPR') %>%
+                mutate(cal = 'NA', den = 'NA', est = 'naive (np)' )
+      
+     if(naiveOnly == TRUE){
+       diffs.j <- ntpr %>%
+                mutate(delta = TPR2 - TPR1)
+       
+       diffout <- diffs.j
+     }else{
+      # get model-based naive estimates: llogit
+      ntpr.mbl <-  aTPR(data = df.j, groupvar = s, ref = '1', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(1,TRUE)
+                      , drmethod = 'none', cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'TPR') %>% 
+                    mutate(cal = 'llogit', den = 'NA', est ='naive (mb-llogit)')
+    
+      # get model-based naive estimates: llogit
+      ntpr.mbq <-  aTPR(data = df.j, groupvar = s, ref = '1', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(2,TRUE)
+                      , drmethod = 'none', cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'TPR') %>% 
+                    mutate(cal = 'qlogit', den = 'NA', est ='naive (mb-qlogit)')
+    
+    # ------------ adjusted to reference group 1 ------------ #
+      
+      # get adjusted with linear logit for both steps
+      atpr.ll <- aTPR(data = df.j, groupvar = s, ref = '1', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(1,TRUE)
+                      , drmethod = 'logit', dr.args = 1, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'llogit', den = 'llogit', est ='adjusted')
+      
+      # get adjusted with linear logit for calibration and qlogit for density ratio
+      atpr.lq <- aTPR(data = df.j, groupvar = s, ref = '1', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(1,TRUE)
+                      , drmethod = 'logit', dr.args = 2, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'llogit', den = 'qlogit', est ='adjusted')
+      
+      # get adjusted with qlogit for calibration and linear logit for density ratio
+      atpr.ql <- aTPR(data = df.j, groupvar = s, ref = '1', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(2,TRUE)
+                      , drmethod = 'logit', dr.args = 1, cv = FALSE)$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'qlogit', den = 'llogit', est ='adjusted')
+      
+      # get adjusted with qlogit for both steps
+      atpr.qq <- aTPR(data = df.j, groupvar = s, ref = '1', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(2,TRUE)
+                      , drmethod = 'logit', dr.args = 2, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'qlogit', den = 'qlogit', est ='adjusted')
+      
+       # stack all for ref 1
+      all_ref1 <- ntpr %>%
+              bind_rows(ntpr.mbl) %>%
+              bind_rows(ntpr.mbq) %>%
+              bind_rows(atpr.ll) %>%
+              bind_rows(atpr.lq) %>%
+              bind_rows(atpr.ql) %>%
+              bind_rows(atpr.qq) 
+     
+      
+      # merge in naive values
+      diffs_ref1.j <- all_ref1 %>%
+                left_join(ntpr %>% 
+                            dplyr::select(tau, TPR1) %>% 
+                            rename(TPR.ref = TPR1) %>%
+                            mutate(refgp = 1)
+                          , by = join_by(tau)) %>%
+                mutate(delta = if_else(substr(est,1,5) =='naive', TPR2-TPR.ref, aTPR2 - TPR.ref))
+      
+    # ------------ adjusted to reference group 2 ------------ #
+      
+      # get adjusted with linear logit for both steps
+      atpr.ll2 <- aTPR(data = df.j, groupvar = s, ref = '2', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(1,TRUE)
+                      , drmethod = 'logit', dr.args = 1, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'llogit', den = 'llogit', est ='adjusted')
+      
+      # get adjusted with linear logit for calibration and qlogit for density ratio
+      atpr.lq2 <- aTPR(data = df.j, groupvar = s, ref = '2', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(1,TRUE)
+                      , drmethod = 'logit', dr.args = 2, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'llogit', den = 'qlogit', est ='adjusted')
+      
+      # get adjusted with qlogit for calibration and linear logit for density ratio
+      atpr.ql2 <- aTPR(data = df.j, groupvar = s, ref = '2', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(2,TRUE)
+                      , drmethod = 'logit', dr.args = 1, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'qlogit', den = 'llogit', est ='adjusted')
+      
+      # get adjusted with qlogit for both steps
+      atpr.qq2 <- aTPR(data = df.j, groupvar = s, ref = '2', response = y, risk = gX, taus = taus
+                      ,calmethod = 'logit', cal.args = list(2,TRUE)
+                      , drmethod = 'logit', dr.args = 2, cv = FALSE )$aTPR %>%
+                    pivot_wider(names_from = s, values_from = aTPR, names_prefix = 'aTPR') %>% 
+                    mutate(cal = 'qlogit', den = 'qlogit', est ='adjusted')
+     
+      # stack all for ref 2
+      all_ref2 <- ntpr %>%
+              bind_rows(ntpr.mbl) %>%
+              bind_rows(ntpr.mbq) %>%
+              bind_rows(atpr.ll2) %>%
+              bind_rows(atpr.lq2) %>%
+              bind_rows(atpr.ql2) %>%
+              bind_rows(atpr.qq2) 
+     
+      
+      # merge in naive values
+      diffs_ref2.j <- all_ref2 %>%
+                left_join(ntpr %>% 
+                            dplyr::select(tau, TPR2) %>% 
+                            rename(TPR.ref = TPR2) %>%
+                            mutate(refgp = 2)
+                          , by = join_by(tau)) %>%
+                mutate(delta = if_else(substr(est,1,5) =='naive', TPR1-TPR.ref, aTPR1 - TPR.ref))
+      
+    # ------------ define list of output if naiveOnly=FALSE ------------ #
+     diffout <- (list(diffs_ref1.j, diffs_ref2.j))
+     names(diffout) <- c("diffs_ref1","diffs_ref2")
+     
+     }
+     
+   return(diffout)
+}
+```
+
+# MC Simulations (including benchmarks)
+```{r sim_mc, eval = TRUE}
+simStart <- Sys.time() 
+set.seed(master.seed)
+
+# ------------- Determine starting seed for each setting ------------ #
+seed <- sample(1:10000,nSettings,replace =FALSE)
+
+# ------------- Set-up clusters for parallelization ------------ #
+maxCores <- detectCores()
+maxCores
+ncluster <- min(maxCores-1,40)
+simCluster <- makeCluster(ncluster, type = "PSOCK")
+registerDoParallel(simCluster)
+
+
+# ------------- loop over data generation settings (in parallel) ------------ #
+foreach(k = 1:nSettings, .inorder = FALSE, .combine=rbind) %dopar% {
+  
+  require(dplyr)
+  require(tidyr)
+  require(fairRisk)
+
+  # ----- set seed for current run ----- #
+  set.seed(seed[k])
+  
+  # ----- get parameter values for the current setting ----- #
+  setting.k <- settings[k,]
+  n.k = setting.k[["n"]][[1]]
+  par1.k = c(setting.k[["alpha"]][[1]][1],setting.k[["beta"]][[1]][1])
+  par2.k = c(setting.k[["alpha"]][[1]][2],setting.k[["beta"]][[1]][2])
+  abs1.k = c(setting.k[["theta.a"]][[1]][1],setting.k[["theta.b"]][[1]][1],setting.k[["sigeps"]][[1]][1])
+  abs2.k = c(setting.k[["theta.a"]][[1]][2],setting.k[["theta.b"]][[1]][2],setting.k[["sigeps"]][[1]][2])
+  h.k = c(setting.k[["h"]][[1]])
+  
+  setting.list <- list(n.k
+                       ,c(setting.k[["alpha"]][[1]][1],setting.k[["alpha"]][[1]][2])
+                       ,c(setting.k[["beta"]][[1]][1],setting.k[["beta"]][[1]][2])
+                       ,c(setting.k[["theta.a"]][[1]][1],setting.k[["theta.a"]][[1]][2])
+                       ,c(setting.k[["theta.b"]][[1]][1],setting.k[["theta.b"]][[1]][2])
+                       ,c(setting.k[["sigeps"]][[1]][1],setting.k[["sigeps"]][[1]][2])
+                       ,h.k
+                      ,par1.k, par2.k, abs1.k, abs2.k) 
+  names(setting.list) <- c('n','alpha','beta','theta.a','theta.b','sigeps','h'
+                           ,'par1','par2','abs1','abs2')
+  
+  # ----- initialize output data.frame ----- #
+  diffs_ref1 <- NULL
+  diffs_ref2 <- NULL
+  benchN_ref1 <- NULL
+  benchN_ref2 <- NULL
+  
+  # ----- replicate times ----- #
+  for(j in 1:J){
+  
+      # generate sample data and get estimated TPR and aTPR
+      diffs.j <- spsUtil::quiet(
+                    runOnce(ns = n.k
+                          ,par1 = par1.k
+                          ,par2 = par2.k
+                          ,abs1 = abs1.k
+                          ,abs2 = abs2.k
+                          ,hs = h.k
+                          ,taus = mytau)
+                    )
+    
+      diffs_ref1 <- diffs_ref1 %>%
+                  bind_rows(diffs.j[[1]] %>%
+                                mutate(rep = j)
+                            )
+      
+      
+      diffs_ref2 <- diffs_ref2 %>%
+                  bind_rows(diffs.j[[2]] %>%
+                                mutate(rep = j)
+                            )
+    
+  }  
+  
+  # replicate benchmark N J times
+  for(j in 1:J){
+      # generate sample data and get estimated TPR and aTPR
+      bench_ref1.j <- spsUtil::quiet(
+                    runOnce(ns = n.k
+                          ,par1 = par1.k
+                          ,par2 = par1.k # force par2 = par1
+                          ,abs1 = abs1.k
+                          ,abs2 = abs2.k
+                          ,hs = h.k
+                          ,taus = mytau
+                          ,naiveOnly = TRUE)
+                    )
+  
+       benchN_ref1 <- benchN_ref1 %>%
+                  bind_rows(bench_ref1.j %>%
+                                mutate(rep = j)
+                            )
+       
+       bench_ref2.j <- spsUtil::quiet(
+                    runOnce(ns = n.k
+                          ,par1 = par2.k # force par1 = par2
+                          ,par2 = par2.k 
+                          ,abs1 = abs1.k
+                          ,abs2 = abs2.k
+                          ,hs = h.k
+                          ,taus = mytau
+                          ,naiveOnly = TRUE)
+                    )
+       benchN_ref2 <- benchN_ref2 %>%
+                  bind_rows(bench_ref2.j %>%
+                                mutate(rep = j)
+                            )
+  }
+  
+  # get benchmark 1M once
+  bench1M_ref1 <- spsUtil::quiet(
+                  runOnce(ns = c(largeN,largeN)
+                        ,par1 = par1.k
+                        ,par2 = par1.k # force par2 = par1
+                        ,abs1 = abs1.k
+                        ,abs2 = abs2.k
+                        ,hs = h.k
+                        ,taus = mytau
+                        ,naiveOnly = TRUE)
+                  )
+  
+  bench1M_ref2 <- spsUtil::quiet(
+                  runOnce(ns = c(largeN,largeN)
+                        ,par1 = par2.k # force par1 = par2
+                        ,par2 = par2.k 
+                        ,abs1 = abs1.k
+                        ,abs2 = abs2.k
+                        ,hs = h.k
+                        ,taus = mytau
+                        ,naiveOnly = TRUE)
+                  )
+  
+  
+  # compute theoretical values
+  theo <- getTheoretical(par1 = par1.k, par2 = par2.k, abs1 = abs1.k, abs2= abs2.k, rho=n.k[1]/sum(n.k), tau_values = mytau)
+ 
+  out <- list(diffs_ref1,benchN_ref1,bench1M_ref1,theo[[1]]
+              ,diffs_ref2,benchN_ref2,bench1M_ref2,theo[[2]]
+              ,seed[k],setting.list)
+  
+  names(out) <- c("df_diffs (refgp = 1)","df_benchN (refgp = 1)","df_bench1M (refgp = 1)","theoretical (refgp = 1)"
+                  ,"df_diffs (refgp = 2)","df_benchN (refgp = 2)","df_bench1M (refgp = 2)","theoretical (refgp = 2)"
+                  ,"starting.seed","settings")
+  
+  # save MC replicates
+  save(out,file=paste0(folder,simid,'_setting_',k,'_with_benchmarks.Rdata'))
+  
+ 
+} # end of parallelized block
+
+stopCluster(simCluster)
+simStop <- Sys.time()
+simStop-simStart
+```
+
+
+# Total Runtime
+```{r sim_calcRunTime}
+Sys.time() - timestart
+```

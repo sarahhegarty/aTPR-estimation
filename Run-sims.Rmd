@@ -1,0 +1,62 @@
+---
+title: "Run Simulations with fairRisk package"
+author: "Sarah Hegarty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r outersetup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+outer_start <- Sys.time()
+```
+
+# Install fairRisk package
+```{r outer_installpkg}
+library(usethis)
+library(devtools)
+devtools::install_github("sarahhegarty/fairRisk")
+packageVersion("fairRisk")
+```
+
+# Working Directory and Session Info
+```{r outer_session}
+getwd()
+sessionInfo()
+```
+
+# Simulations: Alpha = (2,4)  
+
+```{r outer_sim_parms, results = 'hide'}
+sim.boot = 500
+sim.tau = seq(0.1, 0.6, 0.05)
+```
+
+```{r outer_sim_1k, results = 'hide'}
+rmarkdown::render("sim01-aTPR-alpha24.Rmd"
+                  , params = list(bootJ = sim.boot, seed = 24304
+                                  , n2 = 1000, nickname = '1k'
+                                  , taulist = sim.tau)
+                  ,output_file = 'sim01-aTPR-alpha24-1k.html')
+```
+
+```{r outer_sim_2k, results = 'hide'}
+rmarkdown::render("sim01-aTPR-alpha24.Rmd"
+                  , params = list(bootJ = sim.boot, seed = 243071
+                                  , n2 = 2000, nickname = '2k'
+                                  , taulist = sim.tau)
+                  ,output_file = 'sim01-aTPR-alpha24-2k.html')
+```
+
+```{r outer_sim_5k, results = 'hide'}
+rmarkdown::render("sim01-aTPR-alpha24.Rmd"
+                  , params = list(bootJ = sim.boot, seed = 243073
+                                  , n2 = 5000, nickname = '5k'
+                                  , taulist = sim.tau)
+                  ,output_file = 'sim01-aTPR-alpha24-5k.html')
+```
+
+# Total Run Time
+```{r outer_runtime}
+Sys.time() - outer_start
+```
