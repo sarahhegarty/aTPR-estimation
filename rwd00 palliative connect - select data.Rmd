@@ -1,0 +1,126 @@
+---
+title: "aTPR Real World Data Analysis using fairRisk: Palliative Connect"
+subtitle: "Data Selection and Summary Statistics"
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r rwdselect_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r rwdselect_libs, include= FALSE}
+library(dplyr)
+```
+
+# Load Data
+```{r rw_loadData}
+encounters_full <- read.csv(file="U:/Research/Dissertation/12 adjusted TPR/palliative connect/data/test_2017_clean.csv",header=TRUE) 
+
+encounters <- encounters_full %>%
+          dplyr::select(SUBJECT_ID, ENCOUNTER_ID, AGE, GENDER_CODE, RACE_CODE, X6_month_mortality, preds_orig, AGE_norm, race_ethnicity, insurance_type, B19013_2017, S1501_2017) %>%
+          rename(income = B19013_2017
+                 ,education = S1501_2017)
+```
+
+There are 58,464 encounters from 41,327 distinct individuals. The total number of encounters for each person is summarized below: 
+```{r rwdselect_sumenc}
+nencounters <- encounters %>%
+                group_by(SUBJECT_ID) %>%
+                summarize(nEncounters= n())
+table(nencounters$nEncounters)
+
+encounters <- encounters %>%
+        left_join(nencounters, by = join_by(SUBJECT_ID))
+```
+
+This is a departure from Steph's published paper, but to get to the patient level, I will randomly select one encounter per patient.
+```{r rwdselect_makeunique}
+set.seed(240306)
+
+pc <- encounters %>% 
+        group_by(SUBJECT_ID) %>%
+        slice_sample(n=1) %>%
+        ungroup()
+
+pallconnect <- pc %>%
+          filter(race_ethnicity %in% c('Non_hispanic_white','Black','Asian'))
+
+save(pallconnect,file="rwdout/pallconnect.RData")
+```     
+
+# Summary Statistics
+```{r rwdselect_sumstats}
+pc <- pallconnect %>%
+  dplyr::select(SUBJECT_ID,race_ethnicity, GENDER_CODE, preds_orig, X6_month_mortality )%>%
+  mutate(GENDERxRACE = paste0(GENDER_CODE,'-',race_ethnicity)) 
+
+sum.pc <-  pc %>%
+              summarize(n = n()
+                        ,n.deaths = sum(X6_month_mortality)
+                        ,mort.rate = mean(X6_month_mortality)
+                        ,risk.mean = mean(preds_orig)
+                        ,risk.median = median(preds_orig)
+                        ,risk.min = min(preds_orig)
+                        ,risk.max = max(preds_orig)
+                        ,risk.q05 =quantile(preds_orig, 0.05)
+                        ,risk.q95 =quantile(preds_orig, 0.95)) %>%
+              mutate(var = 'Total', level = ' ') %>%
+        bind_rows( pc %>%
+                      group_by(GENDER_CODE) %>%
+                      summarize(n = n()
+                                ,n.deaths = sum(X6_month_mortality)
+                                ,mort.rate = mean(X6_month_mortality)
+                                ,risk.mean = mean(preds_orig)
+                                ,risk.median = median(preds_orig)
+                                ,risk.min = min(preds_orig)
+                                ,risk.max = max(preds_orig)
+                                ,risk.q05 =quantile(preds_orig, 0.05)
+                                ,risk.q95 =quantile(preds_orig, 0.95)) %>%
+                      mutate(var = 'Gender') %>%
+                      rename(level = GENDER_CODE)
+          ) %>%
+       bind_rows( pc %>%
+                       group_by(race_ethnicity) %>%
+                       summarize(n = n()
+                                  ,n.deaths = sum(X6_month_mortality)
+                                  ,mort.rate = mean(X6_month_mortality)
+                                  ,risk.mean = mean(preds_orig)
+                                  ,risk.median = median(preds_orig)
+                                  ,risk.min = min(preds_orig)
+                                  ,risk.max = max(preds_orig)
+                                  ,risk.q05 =quantile(preds_orig, 0.05)
+                                  ,risk.q95 =quantile(preds_orig, 0.95))  %>%
+                       mutate(var = 'Race') %>%
+                       rename(level = race_ethnicity)
+          ) %>%
+        bind_rows( pc %>%
+               group_by(GENDERxRACE) %>%
+               summarize(n = n()
+                          ,n.deaths = sum(X6_month_mortality)
+                          ,mort.rate = mean(X6_month_mortality)
+                          ,risk.mean = mean(preds_orig)
+                          ,risk.median = median(preds_orig)
+                          ,risk.min = min(preds_orig)
+                          ,risk.max = max(preds_orig)
+                          ,risk.q05 =quantile(preds_orig, 0.05)
+                          ,risk.q95 =quantile(preds_orig, 0.95))  %>%
+                 mutate(var = 'Gender x Race') %>%
+                 rename(level = GENDERxRACE)
+          ) %>%
+  select(var, level, n, n.deaths, mort.rate, risk.mean, risk.median, risk.max, risk.min, risk.q05, risk.q95)
+sum.pc 
+
+write.csv(sum.pc
+          , file = 'rwdout/PalliativeConnect-Summary-Statistics.csv'
+          , row.names = FALSE)
+```
+
+
+```{r rwd_tauqtiles}
+q = seq(0,1,0.05)
+
+# observed quantiles
+quantile(pallconnect$preds_orig, q)
+```

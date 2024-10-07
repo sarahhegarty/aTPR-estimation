@@ -1,0 +1,437 @@
+---
+title: "aTPR Real World Data Analysis using fairRisk: Palliative Connect"
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+params:
+  taulist: !r seq(0.1, 0.6, 0.05)
+  J: 500
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+timestart = Sys.time()
+```
+
+# Working Directory & Setup
+```{r adj_wd}
+getwd()
+
+simid = 'rwd03-palliative-connect-replicate-original-'
+folder = 'rwdout/'
+J = params$J
+taulist = params$taulist
+
+# parameters
+params
+```
+
+
+```{r adj_libs, message=F}
+library(tidyr)
+library(dplyr)
+library(stats)
+library(ggplot2)
+library(patchwork)
+
+library(usethis)
+library(devtools)
+devtools::install_github("sarahhegarty/fairRisk")
+packageVersion("fairRisk")
+library(fairRisk)
+```
+
+# Session Info
+```{r adj_sessionInfo}
+sessionInfo()
+```
+
+# Read in Data
+```{r adj_readdata}
+load(paste0(folder,"pallconnect.RData"))
+pc <- pallconnect %>%
+  dplyr::select(SUBJECT_ID,race_ethnicity, GENDER_CODE, preds_orig, X6_month_mortality )%>%
+  mutate(GENDERxRACE = paste0(GENDER_CODE,'-',race_ethnicity)) 
+```
+
+# Run analyses on bootstrapped samples
+
+```{r adj_defMakeSpag, echo = FALSE}
+makeSpag <- function(outlist, ref){
+  reps <- outlist[["boot"]]
+ 
+  boot.sum <- outlist[["aTPR"]] %>%
+                  mutate(bootrep = 0)
+  
+  panel_aTPR <-  reps %>%
+                    ggplot(aes(tau, aTPR, group = bootrep)) +
+                      geom_smooth(method='gam', se = FALSE, linewidth = 0.2,color='gray75') +
+                      geom_smooth(data = boot.sum, aes(tau,aTPR.bootmean) ,method='gam',se=F,color='darkorchid2') +
+                      geom_smooth(data = boot.sum, aes(tau,aTPR.boot.lower) ,method='gam',se=F, linetype = 'dotted',color='darkorchid2') +
+                      geom_smooth(data = boot.sum, aes(tau,aTPR.boot.upper) ,method='gam',se=F, linetype = 'dotted',color='darkorchid2') +
+                  facet_wrap(~ s) +
+                  theme_bw()
+  panel_aTPR
+  
+  rep.delta <- reps %>%
+                filter(s != ref) %>%
+                left_join(reps %>% filter(s == ref) %>% rename(aTPR.ref = aTPR, ref = s),
+                          by = join_by(tau, bootrep)) %>%
+                mutate(delta = aTPR - aTPR.ref)
+  
+  delta.sum <- rep.delta %>%
+                  group_by(tau,s) %>%
+                  summarize(dTPR.mean = mean(delta)
+                            ,dTPR.lower = quantile(delta,0.025)
+                            ,dTPR.upper = quantile(delta,0.975)) %>%
+                  mutate(bootrep =0)
+  
+  panel_dTPR <-rep.delta %>%
+                    ggplot(aes(tau, delta, group = bootrep)) +
+                      geom_smooth(method='gam', se = FALSE, linewidth = 0.2,color='gray75') +
+                      geom_smooth(data = delta.sum, aes(tau,dTPR.mean) ,method='gam',se=F,color='darkorchid2') +
+                      geom_smooth(data = delta.sum, aes(tau,dTPR.lower) ,method='gam',se=F, linetype = 'dotted',color='darkorchid2') +
+                      geom_smooth(data = delta.sum, aes(tau,dTPR.upper) ,method='gam',se=F, linetype = 'dotted',color='darkorchid2') +
+                  facet_wrap(~s) +
+                  theme_bw()
+  panel_dTPR
+  
+  figs <- list(panel_aTPR, panel_dTPR)
+  
+  return(figs)
+}
+```
+
+## adjusted TPR - GENDER
+```{r adj_boot.gender}
+load('Z:/D12-aTPR/12.04.06.03/out-12.04.06.03/QL-Gender-DownSample1_500.Rdata')
+
+gender.boot <- NULL
+
+for(k in 1:J){
+  bootSamp <- pc %>% 
+                filter(SUBJECT_ID %in% outlist[[k]])
+  
+  gender.nn <- naiveTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE
+                  , taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.nn$TPR %>%
+                      mutate(est = 'naive', cal = 'none', den = 'none', bootid = k)
+                    )
+  
+  gender.ll <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.ll$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'llogit', bootid = k)
+                    )
+  
+  gender.lq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.lq$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'qlogit', bootid = k)
+                    )
+  
+  gender.ql <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.ql$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'llogit', bootid = k)
+                    )
+  
+  gender.qq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args =  2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.qq$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'qlogit', bootid = k)
+                    )
+      
+
+}
+gender.naive <- gender.boot %>%
+                  filter(est == 'naive') %>%
+                  select(GENDER_CODE, tau, TPR, bootid)
+gender.boot.comp <-  gender.boot %>%
+                      filter(est == 'adjusted') %>%
+                      select(-c(GENDER_CODE, TPR)) %>%
+                      rename(GENDER_CODE = s) %>%
+                      left_join(gender.naive 
+                                ) %>%
+                      rename(calmethod = cal
+                             ,densitymethod = den
+                             ,idset = bootid ) %>%
+                      select(GENDER_CODE, idset, tau, calmethod, densitymethod, TPR, aTPR)%>%
+                      arrange(tau, idset, calmethod, densitymethod)
+  
+gender.orig <- NULL
+
+for(t in seq(0.2,0.6,0.1)){
+  load(paste0('Z:/D12-aTPR/12.04.06.03/out-12.04.06.03/QL-Gender-DownSampling1_rep500tau',t,'.RData'))
+  gender.orig <- gender.orig %>%
+                bind_rows(DownSamp %>%
+                  select(GENDER_CODE, idset, tau, calmethod, densitymethod, TPR, aTPR) %>%
+                  filter(idset <= J)
+                )
+}
+
+all.equal(gender.orig, gender.boot.comp %>% filter(tau %in% seq(0.2, 0.6, 0.1))
+                      , check.attributes = FALSE)
+
+save(gender.boot.comp, file = paste0(folder,simid,'gender.RData'))
+```
+```{r, eval = FALSE}
+save(gender.boot, file = paste0(folder,simid,"-gender.Rdata")) 
+
+plots.gender <- makeSpag(gender.boot, ref = 'M')
+plots.gender[[1]] / plots.gender[[2]]
+```
+
+
+## adjusted TPR - RACE
+```{r adj_boot.race}
+load('Z:/D12-aTPR/12.04.06.03/out-12.04.06.03/QL-Race-DownSample1_500.Rdata')
+
+race.boot <- NULL
+
+for(k in 1:J){
+  bootSamp <- pc %>% 
+                filter(SUBJECT_ID %in% outlist[[k]])
+  
+  race.nn <- naiveTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity
+                  , taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.nn$TPR %>%
+                      mutate(est = 'naive', cal = 'none', den = 'none', bootid = k)
+                    )
+  
+  race.ll <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.ll$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'llogit', bootid = k)
+                    )
+  
+  race.lq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.lq$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'qlogit', bootid = k)
+                    )
+  
+  race.ql <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.ql$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'llogit', bootid = k)
+                    )
+  
+  race.qq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args =  2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.qq$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'qlogit', bootid = k)
+                    )
+      
+
+}
+race.naive <- race.boot %>%
+                  filter(est == 'naive') %>%
+                  select(race_ethnicity, tau, TPR, bootid)
+race.boot.comp <-  race.boot %>%
+                      filter(est == 'adjusted') %>%
+                      select(-c(race_ethnicity, TPR)) %>%
+                      rename(race_ethnicity = s) %>%
+                      left_join(race.naive 
+                                ) %>%
+                      rename(calmethod = cal
+                             ,densitymethod = den
+                             ,idset = bootid ) %>%
+                      select(race_ethnicity, idset, tau, calmethod, densitymethod, TPR, aTPR)%>%
+                      arrange(tau, idset, calmethod, densitymethod)
+  
+race.orig <- NULL
+
+for(t in seq(0.2,0.6,0.1)){
+  load(paste0('Z:/D12-aTPR/12.04.06.03/out-12.04.06.03/QL-Race-DownSampling1_rep500tau',t,'.RData'))
+  race.orig <- race.orig %>%
+                bind_rows(DownSamp %>%
+                  select(race_ethnicity, idset, tau, calmethod, densitymethod, TPR, aTPR) %>%
+                  filter(idset <= J)
+                )
+}
+
+all.equal(race.orig, race.boot.comp %>% filter(tau %in% seq(0.2, 0.6, 0.1))
+                      , check.attributes = FALSE)
+
+save(race.boot.comp, file = paste0(folder,simid,'race.RData'))
+```
+
+
+```{r, eval = FALSE}
+plots.race <- makeSpag(race.boot, ref = 'Non_hispanic_white')
+plots.race[[1]] / plots.race[[2]]
+```
+
+
+## adjusted TPR - GENDERxRACE
+
+## adjusted TPR - RACE
+```{r adj_boot.genderrace}
+load('Z:/D12-aTPR/12.04.06.03/out-12.04.06.03/QL-RaceGender-DownSample1_500.Rdata')
+
+genderrace.boot <- NULL
+
+for(k in 1:J){
+  bootSamp <- pc %>% 
+                filter(SUBJECT_ID %in% outlist[[k]])
+  
+  genderrace.nn <- naiveTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE
+                  , taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.nn$TPR %>%
+                      mutate(est = 'naive', cal = 'none', den = 'none', bootid = k)
+                    )
+  
+  genderrace.ll <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.ll$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'llogit', bootid = k)
+                    )
+  
+  genderrace.lq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.lq$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'qlogit', bootid = k)
+                    )
+  
+  genderrace.ql <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.ql$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'llogit', bootid = k)
+                    )
+  
+  genderrace.qq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args =  2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.qq$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'qlogit', bootid = k)
+                    )
+      
+
+}
+genderrace.naive <- genderrace.boot %>%
+                  filter(est == 'naive') %>%
+                  select(GENDERxRACE, tau, TPR, bootid)
+genderrace.boot.comp <-  genderrace.boot %>%
+                      filter(est == 'adjusted') %>%
+                      select(-c(GENDERxRACE, TPR)) %>%
+                      rename(GENDERxRACE = s) %>%
+                      left_join(genderrace.naive 
+                                ) %>%
+                      rename(calmethod = cal
+                             ,densitymethod = den
+                             ,idset = bootid ) %>%
+                      select(GENDERxRACE, idset, tau, calmethod, densitymethod, TPR, aTPR)%>%
+                      arrange(tau, idset, calmethod, densitymethod)
+  
+genderrace.orig <- NULL
+
+for(t in seq(0.2,0.6,0.1)){
+  load(paste0('Z:/D12-aTPR/12.04.06.03/out-12.04.06.03/QL-RaceGender-DownSampling1_rep500tau',t*100,'.RData'))
+  genderrace.orig <- genderrace.orig %>%
+                bind_rows(DownSamp %>%
+                  select(GENDERxRACE, idset, tau, calmethod, densitymethod, TPR, aTPR) %>%
+                  filter(idset <= J)
+                )
+}
+
+all.equal(genderrace.orig, genderrace.boot.comp %>% filter(tau %in% seq(0.2, 0.6, 0.1))
+                      , check.attributes = FALSE)
+
+save(genderrace.boot.comp, file = paste0(folder,simid,'genderrace.RData'))
+```
+
+```{r, eval = FALSE}
+plots.genderrace <- makeSpag(genderrace.boot, ref = 'M-Non_hispanic_white')
+plots.genderrace[[1]] / plots.genderrace[[2]]
+```
+
+
+# Total Run Time
+```{r adj_runtime}
+Sys.time() - timestart
+```
