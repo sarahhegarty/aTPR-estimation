@@ -15,6 +15,6 @@ Code for reproducing the simulation figures are available:
 
 ## Real World Example
 The Palliative Connect dataset is derived from electronic health records data and cannot be publicly shared. However, the code use for analysis and figure generation is provided.
-  - Analysis file: 
+  - Analysis files: rwd00 palliative connect - select data.Rmd + rwd03 palliative connect - adjusted - replicate orig.Rmd 
   - Figure 3 code: atpr-figure-3.Rmd
   - Table 1 code: atpr-table-1.Rmd.
