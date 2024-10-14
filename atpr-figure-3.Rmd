@@ -40,40 +40,32 @@ gender.naive <- naiveTPR(data=pallconnect
                       rename(s = GENDER_CODE)
 
 
-gender.adj <- NULL
-for(caldegree in c(1,2)){
-  for(dendegree in c(1,2)){
-    
-    gender.adjK <- aTPR(data= pallconnect
+gender.adj <- aTPR(data= pallconnect
                         ,groupvar = GENDER_CODE
                         ,ref = "M"
                         ,response = X6_month_mortality
                         ,risk = preds_orig
                         ,taus = taus
                         ,calmethod = 'logit'
-                        ,list(caldegree, TRUE)
+                        ,list(2, TRUE)
                         ,drmethod = 'logit'
-                        ,dr.args = list(dendegree)
+                        ,dr.args = list(2)
                         ,se.boot = FALSE
                         )$aTPR %>%
-                      mutate(cal = if_else(caldegree == 1,"llogit","qlogit")
-                             ,den = if_else(dendegree == 1,"llogit","qlogit"))
-          
-    gender.adj <- gender.adj %>%
-                      bind_rows(gender.adjK)
-  }
-}
+                      mutate(cal = "qlogit"
+                             ,den = "qlogit")
+ 
 
 # Merge in naive estimates to each row and compute differences
 diffs.gender <- gender.adj %>%
                     filter(s != 'M') %>%
-                    mutate(estimate= 'adjusted'
+                    mutate(estimate= 'Adjusted'
                            , method = paste0(cal,"+",den)) %>%
                     bind_rows(gender.naive %>%
                                   filter(s != 'M') %>%
                                   select(s, tau, TPR) %>%
                                   unique() %>%
-                                  mutate(estimate = 'naive'
+                                  mutate(estimate = ' Naive'
                                          , method = ' naive')
                     ) %>%
                 left_join(gender.naive  %>%
@@ -82,7 +74,7 @@ diffs.gender <- gender.adj %>%
                             unique() %>%
                             rename(TPR.ref = TPR)
                           ) %>%
-                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref))
+                mutate(delta = if_else(estimate == ' Naive', TPR-TPR.ref, aTPR-TPR.ref))
 
 # Get mean and CIs for delta
 # diffs.gender.sum <- diffs.gender %>%
@@ -95,13 +87,14 @@ diffs.gender <- gender.adj %>%
 # diffs.gender.sum %>% pull(n) %>% unique()
 
 panelC <- diffs.gender %>%
-  ggplot(aes(tau,delta,group=method,linetype=method)) + 
+  ggplot(aes(tau,delta,group=estimate,linetype=estimate)) + 
     #geom_point() + 
     geom_line() +
     ylim(c(-0.2,0.2)) +
     xlab(expression(paste("Decision Threshold, ",tau))) +
     ylab(expression(paste('Difference in (a)TPRs, ',Delta))) +
-  theme_bw()+ 
+    scale_linetype_manual(name='Estimation Method', values = c(" Naive" = "solid", "Adjusted" = "dashed")) +
+    theme_bw()+ 
     ggtitle("C")
 panelC
 
@@ -162,15 +155,6 @@ panelA
 # ---------------------------------------------------------------------- #
 
 figout = folder
-# main 
-(panelA   | panelB) / panelC + plot_layout(guides='collect') 
-ggsave(file=paste0(figout,"PC-Gender-tripanel-PNAS.eps"), dpi=300,height=6,width=7)
-
-(panelA   | panelB) / panelC + plot_layout(guides='collect') &
-  theme(legend.position = 'bottom'
-        ,legend.direction = 'vertical')
-ggsave(file=paste0(figout,"PC-Gender-tripanel-PNAS-bottomlegend.eps"), dpi=300,height=6,width=6)
-
 
 (panelA   | panelB) / panelC + plot_layout(guides='collect') &
   theme(legend.position = 'bottom'

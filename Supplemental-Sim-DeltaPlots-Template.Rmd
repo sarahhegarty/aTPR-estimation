@@ -136,7 +136,10 @@ shortstack <- stack.sum %>%
      filter(sigeps2 == params$sigeps2, h2 == params$h2) %>%
      rename(b2 = theta.b2
              ,a2 = theta.a2) %>%
-     mutate()
+     mutate(alab = factor(a2,levels = c("-0.5","-0.25","0","0.25","0.5")
+                             ,labels = c("a[2]: -0.5","a[2]: -0.25","a[2]: 0","a[2]: 0.25","a[2]: 0.5"))
+             ,blab = paste0("b[2]: ",b2))
+
 
 shortbench <- bench1M %>%
      filter(est == "naive (np)") %>%
@@ -145,7 +148,11 @@ shortbench <- bench1M %>%
      rename(b2 = theta.b2
              ,a2 = theta.a2) %>%
      mutate(estimate= 'Benchmark'
-            ,nn = ' Benchmark 1M') 
+            ,nn = ' Benchmark 1M') %>%
+     mutate(alab = factor(a2,levels = c("-0.5","-0.25","0","0.25","0.5")
+                             ,labels = c("a[2]: -0.5","a[2]: -0.25","a[2]: 0","a[2]: 0.25","a[2]: 0.5"))
+             ,blab = paste0("b[2]: ",b2))
+
 
 ggplot() +
       geom_pointrange(data= shortstack, aes(x=nn, y=delta.mean, ymin=delta.lower, ymax=delta.upper, color=estimate), size = 0.2) +
@@ -153,14 +160,14 @@ ggplot() +
       geom_point(data =shortbench,aes(x=nn, y=delta,color=estimate)) + 
       coord_flip() +  # flip coordinates (puts labels on y axis  
       scale_x_discrete() +
-      xlab("Estimate Type") +
+      xlab("Estimation Method") +
       ylab(expression(paste("Difference in (a)TPRs, ",Delta))) + 
-      facet_grid(a2~ b2, labeller = label_both)+
+      facet_grid(alab ~ blab, labeller = label_parsed) +
       theme_bw() + 
-      scale_color_manual(name='Estimate Type',values = c('Adjusted' = 'black', 'Naive' = 'maroon', 'Benchmark' = 'deepskyblue')) +
-      scale_linetype_manual(name='Estimate Type',values = c('Adjusted' = 'solid', 'Naive' = 'solid', 'Benchmark' = 'solid'))  +
+      scale_color_manual(name='Estimation Method',values = c('Adjusted' = 'black', 'Naive' = 'maroon', 'Benchmark' = 'deepskyblue')) +
+      scale_linetype_manual(name='Estimation Method',values = c('Adjusted' = 'solid', 'Naive' = 'solid', 'Benchmark' = 'solid'))  +
       theme(legend.position="bottom")
 
-ggsave(paste0("supfigs/dTPR-Forest_",simlab,"-",toupper(substr(params$h2,1,1)),params$sigeps*10,".png"),height=6.5,width=6, dpi = 300)
+ggsave(paste0("supfigs/dTPR-Forest_",simlab,"-",toupper(substr(params$h2,1,1)),params$sigeps*10,".eps"),height=6.5,width=6, dpi = 300)
 ```
 

@@ -1,0 +1,158 @@
+---
+title: "Supplemental-QQPlots from sim01-aTPR-alpha24 [12.05.01]"
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+params:
+  simid: '12.05.01'
+  simlab: 'sim01-aTPR-alpha24'
+  taulist: 0.2
+  nlist: !r c('1k','2k','5k')
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, include= FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(ggh4x)
+```
+
+```{r setup2}
+folder = paste0('/Users/Sarah/Box/Research/Dissertation/12 Adjusted TPR/numerical/',params$simid,'/simout/')
+params
+```
+
+
+# Read in simulation output data
+```{r}
+# Load Results from fairRisk package
+diffs <- NULL
+for(n in params$nlist){ 
+  for(k in 1:60){
+    load(paste0(folder,params$simlab,'-',n,'_setting_',k,'_with_benchmarks.Rdata'))
+    
+    settings <- out$settings
+    diffsK <- out[["df_diffs (refgp = 1)"]] %>%
+                      mutate(setting_id = k
+                             ,n1 = settings$n[1]
+                             ,n2 = settings$n[2]
+                             ,alpha1 = settings$alpha[1]
+                             ,alpha2 = settings$alpha[2]
+                             ,beta1 = settings$beta[1]
+                             ,beta2 = settings$beta[2]
+                             ,theta.a1 = settings$theta.a[1]
+                             ,theta.a2 = settings$theta.a[2]
+                             ,theta.b1 = settings$theta.b[1]
+                             ,theta.b2 = settings$theta.b[2]
+                             ,sigeps1 = settings$sigeps[1]
+                             ,sigeps2 = settings$sigeps[2]
+                             ,h1 = settings$h[1]
+                             ,h2 = settings$h[2]
+                    )
+                  
+    
+     bench1M <- out[["df_bench1M (refgp = 1)"]] %>%
+                      mutate(setting_id = k
+                             ,n1 = settings$n[1]
+                             ,n2 = settings$n[2]
+                             ,alpha1 = settings$alpha[1]
+                             ,alpha2 = settings$alpha[2]
+                             ,beta1 = settings$beta[1]
+                             ,beta2 = settings$beta[2]
+                             ,theta.a1 = settings$theta.a[1]
+                             ,theta.a2 = settings$theta.a[2]
+                             ,theta.b1 = settings$theta.b[1]
+                             ,theta.b2 = settings$theta.b[2]
+                             ,sigeps1 = settings$sigeps[1]
+                             ,sigeps2 = settings$sigeps[2]
+                             ,h1 = settings$h[1]
+                             ,h2 = settings$h[2]
+                    ) %>%
+                    rename( benchmark1M = delta) %>%
+                    select(-c(TPR1, TPR2, cal, den, est))
+     
+     diffs_with_bench <- diffsK %>%
+                          left_join(bench1M)
+     
+     diffs <- diffs %>%
+                bind_rows(diffs_with_bench)
+  }
+}
+```
+
+
+# Make QQ Plots
+```{r}
+diffs.adj <- diffs %>%
+              filter(est == 'adjusted') %>%
+              filter(tau == params$tau) %>%
+              mutate(setting = paste0(toupper(substr(h1,1,1)),sigeps2*10)
+                     ,nn = paste0(cal,"+",den)
+                     ,delta_centered = delta - benchmark1M)
+diffs.sum <- diffs.adj %>%
+              group_by(setting_id, n2, est, cal, den, tau ) %>%
+              summarize(delta.mean = mean(delta)
+                        ,delta.sd = sd(delta)
+                        ,n=n())
+            
+diffs.adj2 <- diffs.adj %>%
+                left_join(diffs.sum) %>%
+                mutate(delta_std = (delta - delta.mean)/delta.sd) %>%
+                rename(a2 = theta.a2
+                       ,b2 = theta.b2) %>%
+                mutate(alab = factor(a2,levels = c("-0.5","-0.25","0","0.25","0.5")
+                                         ,labels = c("a[2]: -0.5","a[2]: -0.25","a[2]: 0","a[2]: 0.25","a[2]: 0.5"))
+                         ,blab = paste0("b[2]: ",b2))
+```
+
+
+```{r}
+colorslist <- c( 'llogit+llogit' = 'plum2'
+                 ,'llogit+qlogit' = 'mediumorchid1'
+                 ,'qlogit+llogit' = 'darkorchid2'
+                 ,'qlogit+qlogit' = 'darkorchid4')
+
+for(h in c("logit","cloglog")){
+  for(sigeps in c(0.1,0.2)){
+    for(n in params$nlist){
+      
+     diffs.adj2 %>%
+        filter( h2 == h
+                , sigeps2 == sigeps
+                , n2 == as.numeric(substr(n,1,1))*1000) %>%
+        ggplot(aes(sample = delta, color= factor(nn))) +
+        geom_qq(size=0.3) + 
+        geom_qq_line()  +
+        facet_grid(alab ~blab, labeller = label_parsed) + 
+        theme_bw() + 
+        scale_color_manual(name='Estimation Method', values = colorslist) +
+        ylab('Sample Quantiles') +
+        xlab('Theoretical Quantiles') 
+  ggsave(paste0('supfigs/QQplots_alpha24_aTPR_',toupper(substr(h,1,1)),sigeps*10,'-',n,'.eps'), height=8,width=7)
+  
+   diffs.adj2 %>%
+       filter( h2 == h
+                , sigeps2 == sigeps
+                , n2 == as.numeric(substr(n,1,1))*1000) %>%
+        ggplot(aes(sample = delta_std, color= factor(nn))) +
+        geom_qq(size=0.3) + 
+        geom_qq_line()  +
+        geom_abline(slope=1,intercept=0,linetype='dotted') +
+        facet_grid(alab ~blab, labeller = label_parsed) + 
+        theme_bw() +
+        scale_color_manual(name='Estimation Method', values = colorslist) +
+        ylab('Sample Quantiles') +
+        xlab('Theoretical Quantiles') 
+    ggsave(paste0('supfigs/QQplots_alpha24_aTPR_stdized_',toupper(substr(h,1,1)),sigeps*10,'-',n,'.eps'), height=8,width=7)
+
+    }
+  }
+}
+```
+
