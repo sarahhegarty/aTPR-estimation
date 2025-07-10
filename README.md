@@ -18,3 +18,4 @@ The Palliative Connect dataset is derived from electronic health records data an
   - Analysis files: rwd00 palliative connect - select data.Rmd + rwd03 palliative connect - adjusted - replicate orig.Rmd 
   - Figure 3 code: atpr-figure-3.Rmd
   - Table 1 code: atpr-table-1.Rmd.
+  - Supplemental Figures 24-26: Supplemental-RWD-DeltaPlots-by-tau.Rmd
