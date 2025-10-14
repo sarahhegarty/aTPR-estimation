@@ -13,9 +13,17 @@ Code for reproducing the simulation figures are available:
   - Supplemental Figures S1-S11: R1-Supplemental-Sim-DeltaPlots.Rmd + R1-Supplemental-Sim_DeltaPlots-Template.Rmd
   - Supplemental Figures S12-S23: Supplemental-Sim-QQPlots-Template.Rmd
 
+### Bootstrapping Coverage Simulation
+A smaller simulation study was conducted to explore the coverage of the confidence intervals used in the real world data application. Code for reproducing the simulation is available in R1-addtl-bootstrap-var-comp.Rmd.
+
 ## Real World Example
 The Palliative Connect dataset is derived from electronic health records data and cannot be publicly shared. However, the code use for analysis and figure generation is provided.
   - Analysis files: rwd00 palliative connect - select data.Rmd + rwd03 palliative connect - adjusted - replicate orig.Rmd 
   - Figure 3 code: R1-atpr-figure-3.Rmd
   - Table 1 code: R1-atpr-table-1.Rmd.
   - Supplemental Figures 24-26: R1=Supplemental-RWD-DeltaPlots-by-tau.Rmd
+
+## Pseudodata
+A synthetic data set was generated to mimic the Palliative Connect dataset along with corresponding analytic files.
+ 
+
