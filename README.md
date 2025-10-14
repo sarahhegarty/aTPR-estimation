@@ -6,6 +6,7 @@ Figure 1 illustrates the risk distribution issue. Code to reproduce this figure 
 
 
 ## Simulation Studies
+### Primary Simulations
 The numerical studies in the paper can be reproduced by the Run-sims.Rmd file. This file calls on the sim01-aTPR-alpha24.Rmd files, simfuncs/dataGen.R, simfuncs/getTheoretical.R, and the R package "fairRisk" (available through github.com/sarahhegarty/fairRisk). 
 
 Code for reproducing the simulation figures are available:
