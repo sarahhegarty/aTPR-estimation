@@ -1,0 +1,927 @@
+---
+title: "12 Adjusted TPR"
+subtitle: "aTPR - PNAS manuscript (revision) Psuedodata Generation & Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, include= FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(EnvStats)
+library(fairRisk)
+
+set.seed(20250630)
+
+#folder = '/Users/Sarah/Box/Research/Dissertation/12 Adjusted TPR/numerical/12.05.01/rwdout/'
+infolder = '/Volumes/home_hegarty/D12-aTPR/12.05.01/rwdout/'
+outfolder = '/Users/hegarty/Library/CloudStorage/Box-Box/Research/Dissertation/12 Adjusted TPR/12a aTPR Estimation Paper/code-figures/'
+simlab = 'pseudodata-R1-'
+```
+
+# ESTIMATE DISTRIBUTIONS IN REAL DATA
+```{r}
+load(paste0(infolder,"pallconnect.Rdata"))
+
+pc <- pallconnect %>%
+  dplyr::select(SUBJECT_ID,race_ethnicity, GENDER_CODE, preds_orig, X6_month_mortality )%>%
+  mutate(GENDERxRACE = paste0(GENDER_CODE,'-',race_ethnicity)) 
+
+
+pc.cal <- calibrateRiskCV(pc, groupvar = GENDERxRACE, risk = preds_orig, response = X6_month_mortality, transform = TRUE, method = 'logit', args = list(2), quietly = FALSE)[["caldf"]]
+
+# get MLE of beta shape parameters for each group, estimate of pi.hat density
+grouplist <- pc.cal %>% pull(s) %>% unique()
+bparms <- list()
+for(g in grouplist){
+  bparms[[g]] <- ebeta(x = pc.cal %>% filter(s == g) %>% pull(rs.gX), method = 'mle')[["parameters"]]
+}
+
+
+dens <- NULL
+for(g in grouplist){
+  params <- bparms[[g]]
+  L <- rbeta(n = 1E7, shape1 = params[1], shape2 = params[2])
+  dens <- dens %>% bind_rows(data.frame(pi_g = L, s = g))
+}
+
+pc.cal %>%
+    ggplot(aes(rs.gX)) +
+    geom_density() + 
+    geom_density(data = dens, aes(pi_g), linetype = 'dashed') + 
+    facet_wrap(~s) + 
+    theme_bw() +
+    scale_x_log10()
+```
+
+# GENERATE PSUEDODATA
+```{r}
+gsize <- pc.cal %>%
+    group_by(s) %>%
+    summarize(n = n())
+
+pd <- NULL
+coefs <- list()
+for(g in grouplist){
+  params <- bparms[[g]]
+  n_g <- gsize %>% filter(s == g) %>% pull(n)
+  L <- rbeta(n = n_g, shape1 = params[1], shape2 = params[2])
+ # E <- rnorm(n = n_g, 0, 0.05)
+  Y <- rbinom(n = n_g, size = 1, prob = L)
+   
+  lm.fit <- lm(lp.gX ~ logit(rs.gX), data = pc.cal %>% filter(s == g))
+  coefs[[g]] <- c(coefficients(lm.fit), sd(resid(lm.fit)))
+  
+  E <- rnorm(n = n_g, 0, coefs[[g]][3])
+  
+  df <- bind_rows(data.frame(s = g, pi_s= L, y = Y, epsilon = E)) %>%
+          mutate(logit.r = coefs[[g]][1] + coefs[[g]][2] * logit(pi_s) + epsilon
+                 ,r = expit(logit.r))
+  
+  pd <- pd %>% bind_rows(df)
+}
+
+pd %>%
+    ggplot(aes(r)) +
+    geom_density() + 
+    theme_bw() +
+    facet_wrap(~s)
+
+pd %>%
+    ggplot(aes(r, pi_s)) +
+    geom_point() + 
+    geom_smooth() + 
+    theme_bw() +
+    facet_wrap(~s) +
+    geom_abline(slope = 1, intercept = 0, linetype = 'dashed')
+
+pd <- pd %>%
+        rename(preds_orig = r
+               ,X6_month_mortality = y) %>%
+        mutate(GENDER_CODE = substr(s,1,1)
+               ,race_ethnicity = substr(s,3,20)) %>%
+        rename(GENDERxRACE = s)
+
+save(pd, file = paste0(outfolder,'pseudodata-pallconnect.Rdata'))
+write.csv(pd, file = paste0(outfolder,'pseudodata-pallconnect.csv'))
+```
+
+# RUN FIGURE 3 CODE ON PSUEDODATA
+```{r}
+# Read in Data
+load(paste0(outfolder,'pseudodata-pallconnect.Rdata'))
+# ---------------------------------------------------------------------- #
+# --        PANEL C: DELTA TPR PLOTS AS FUNCTION OF TAU               -- #
+# ---------------------------------------------------------------------- #
+taus = seq(0.01,0.99,0.01)
+
+gender.naive <- naiveTPR(data=pd
+                         , risk=preds_orig
+                         , response=X6_month_mortality
+                         , groupvar = GENDER_CODE
+                         , taus=taus
+                         , se.boot = FALSE)$TPR %>%
+                      dplyr::rename(s = GENDER_CODE)
+
+
+gender.adj <- aTPR(data= pd
+                        ,groupvar = GENDER_CODE
+                        ,ref = "M"
+                        ,response = X6_month_mortality
+                        ,risk = preds_orig
+                        ,taus = taus
+                        ,calmethod = 'logit'
+                        ,list(2, TRUE)
+                        ,drmethod = 'logit'
+                        ,dr.args = list(2)
+                        ,se.boot = FALSE
+                        )$aTPR %>%
+                      mutate(cal = "qlogit"
+                             ,den = "qlogit")
+ 
+
+# Merge in naive estimates to each row and compute differences
+diffs.gender <- gender.adj %>%
+                    filter(s != 'M') %>%
+                    mutate(estimate= 'Adjusted'
+                           , method = paste0(cal,"+",den)) %>%
+                    bind_rows(gender.naive %>%
+                                  filter(s != 'M') %>%
+                                  dplyr::select(s, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = ' Naive'
+                                         , method = ' naive')
+                    ) %>%
+                left_join(gender.naive  %>%
+                            filter(s == 'M') %>%
+                            select(tau, TPR) %>%
+                            unique() %>%
+                            dplyr::rename(TPR.ref = TPR)
+                          ,by = join_by(tau)
+                          ) %>%
+                mutate(delta = if_else(estimate == ' Naive', TPR-TPR.ref, aTPR-TPR.ref))
+
+# Get mean and CIs for delta
+# diffs.gender.sum <- diffs.gender %>%
+#                       group_by(s, tau, estimate, method, calmethod, densitymethod) %>%
+#                       summarize(n = n()
+#                                 ,delta.boot.mean = mean(delta)
+#                                 ,delta.boot.lower =quantile(delta,0.025)
+#                                 ,delta.boot.upper = quantile(delta, 0.975)
+#                                 )
+# diffs.gender.sum %>% pull(n) %>% unique()
+
+panelC <- diffs.gender %>%
+  ggplot(aes(tau,delta,group=estimate,linetype=estimate)) + 
+    #geom_point() + 
+    geom_line() +
+    ylim(c(-0.2,0.2)) +
+    xlab(expression(paste("Decision Threshold, ",tau))) +
+    ylab(expression(paste('Difference in (a)TPRs, ',Delta))) +
+    scale_linetype_manual(name='Estimation Method', values = c(" Naive" = "solid", "Adjusted" = "dashed")) +
+    theme_bw()+ 
+    ggtitle("C")
+panelC
+
+# ---------------------------------------------------------------------- #
+# --        PANEL B: DENSITY PLOTS OF CALIBRATED RISKS                -- #
+# ---------------------------------------------------------------------- #
+
+# Estimate r_s() (calibration model)
+ex.cal <- calibrateRiskCV(data = pd, groupvar = GENDER_CODE
+                          ,response = X6_month_mortality, risk = preds_orig
+                          ,transform = TRUE, method = 'logit', args = list(2)
+                          ,cv = TRUE, k=5, quietly = FALSE)
+
+panelB <- ex.cal$caldf %>%
+  mutate(s = if_else(s == 'M', 'Male', 'Female')) %>%
+  ggplot(aes(rs.gX, group = s,color=s)) +
+  geom_density() + 
+  xlab(expression(paste('Re-calibrated Risk Score, ',r^s,'{g(X)}'))) +
+  ylab('Density') +
+  ggtitle("B") +
+  theme_bw()+ 
+  scale_color_manual(name='Sex',values = c('Male' = 'deepskyblue', 'Female' = 'maroon')) 
+
+panelB
+
+
+# ---------------------------------------------------------------------- #
+# --        PANEL A: CALIBRATION PLOTS                                -- #
+# ---------------------------------------------------------------------- #
+pd %>% pull(preds_orig) %>% quantile(seq(0,1,0.05))
+pc.cal <- ex.cal[["caldf"]] %>%
+            mutate(bin = if_else(gX <= 0.1,plyr::round_any(gX,0.005),plyr::round_any(gX,0.05))) 
+
+pc.cal <- pc.cal %>%
+            group_by(s, bin) %>%
+            summarize(y.obs = mean(y)
+                      ,pred = mean(gX))
+
+caldf <- ex.cal$caldf %>%
+            mutate(pred = gX
+                    ,y.obs = rs.gX)
+
+panelA <- pc.cal %>%
+   # mutate(GENDER_CODE = if_else(GENDER_CODE == 'M', 'Male', 'Female')) %>%
+    ggplot(aes(pred,y.obs,group=s,color=s)) +
+    geom_point(show.legend = FALSE)+
+    geom_abline(slope=1,intercept=0,linetype = 'dashed') +
+    xlab('Risk Score, g(X)') +
+    ylab("Observed Event Rate") +
+    scale_color_manual(name='Sex',values = c('M' = 'deepskyblue', 'F' = 'maroon')) +
+  theme_bw()+ 
+    geom_line(data = caldf,aes(pred,y.obs, group = s, color = s),show.legend = FALSE) +
+    ggtitle('A')
+
+panelA
+
+
+# ---------------------------------------------------------------------- #
+# --      ASSEMBLE                                                    -- #
+# ---------------------------------------------------------------------- #
+
+figout = outfolder
+
+(panelA   | panelB) / panelC + plot_layout(guides='collect') &
+  theme(legend.position = 'bottom'
+        ,legend.direction = 'horizontal'
+        ,legend.box ='vertical'
+        ,legend.spacing.y = unit(1,"pt"))
+ggsave(file=paste0(figout,"Psuedo-PC-Gender-tripanel-PNAS-bottomlegend2.eps"),dpi=300,height=6,width=6)
+```
+
+
+# BOOTSTRAP PSUEDODATA
+
+## adjusted TPR - GENDER
+```{r adj_boot.gender, warning=FALSE}
+set.seed(20250707)
+gender.boot <- NULL
+J = 1000
+taulist <- seq(0.2,0.6,0.1)
+
+for(k in 1:J){
+  bootSamp <- pd %>% 
+                group_by(GENDER_CODE) %>%
+                sample_frac(size = 1, replace = TRUE) %>%
+                ungroup()
+        
+  gender.nn <- naiveTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE
+                  , taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.nn$TPR %>%
+                      mutate(est = 'naive', cal = 'none', den = 'none', bootid = k)
+                    )
+  
+  gender.ll <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.ll$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'llogit', bootid = k)
+                    )
+  
+  gender.lq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.lq$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'qlogit', bootid = k)
+                    )
+  
+  gender.ql <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.ql$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'llogit', bootid = k)
+                    )
+  
+  gender.qq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDER_CODE, ref = 'M'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args =  2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  gender.boot <- gender.boot %>%
+                    bind_rows(gender.qq$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'qlogit', bootid = k)
+                    )
+      
+
+}
+gender.naive <- gender.boot %>%
+                  filter(est == 'naive') %>%
+                  select(GENDER_CODE, tau, TPR, bootid)
+gender.boot.comp <-  gender.boot %>%
+                      filter(est == 'adjusted') %>%
+                      select(-c(GENDER_CODE, TPR)) %>%
+                      rename(GENDER_CODE = s) %>%
+                      left_join(gender.naive 
+                                ) %>%
+                      rename(calmethod = cal
+                             ,densitymethod = den
+                             ,idset = bootid ) %>%
+                      select(GENDER_CODE, idset, tau, calmethod, densitymethod, TPR, aTPR)%>%
+                      arrange(tau, idset, calmethod, densitymethod)
+  
+save(gender.boot.comp, file = paste0(outfolder,simlab,'gender.RData'))
+```
+
+
+## adjusted TPR - RACE
+```{r adj_boot.race, warning=FALSE}
+race.boot <- NULL
+
+for(k in 1:J){
+  bootSamp <- pd %>% 
+                group_by(race_ethnicity) %>%
+                sample_frac(size = 1, replace = TRUE) %>%
+                ungroup()
+  
+  race.nn <- naiveTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity
+                  , taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.nn$TPR %>%
+                      mutate(est = 'naive', cal = 'none', den = 'none', bootid = k)
+                    )
+  
+  race.ll <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.ll$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'llogit', bootid = k)
+                    )
+  
+  race.lq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.lq$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'qlogit', bootid = k)
+                    )
+  
+  race.ql <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.ql$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'llogit', bootid = k)
+                    )
+  
+  race.qq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = race_ethnicity, ref = 'Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args =  2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  race.boot <- race.boot %>%
+                    bind_rows(race.qq$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'qlogit', bootid = k)
+                    )
+      
+
+}
+race.naive <- race.boot %>%
+                  filter(est == 'naive') %>%
+                  select(race_ethnicity, tau, TPR, bootid)
+race.boot.comp <-  race.boot %>%
+                      filter(est == 'adjusted') %>%
+                      select(-c(race_ethnicity, TPR)) %>%
+                      rename(race_ethnicity = s) %>%
+                      left_join(race.naive 
+                                ) %>%
+                      rename(calmethod = cal
+                             ,densitymethod = den
+                             ,idset = bootid ) %>%
+                      select(race_ethnicity, idset, tau, calmethod, densitymethod, TPR, aTPR)%>%
+                      arrange(tau, idset, calmethod, densitymethod)
+  
+save(race.boot.comp, file = paste0(outfolder,simlab,'race.RData'))
+```
+
+
+## adjusted TPR - GENDERxRACE
+```{r adj_boot.genderrace, warning=FALSE}
+genderrace.boot <- NULL
+
+for(k in 1:J){ 
+  bootSamp <- pd %>% 
+                group_by(GENDERxRACE) %>%
+                sample_frac(size = 1, replace = TRUE) %>%
+                ungroup()
+  
+  genderrace.nn <- naiveTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE
+                  , taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.nn$TPR %>%
+                      mutate(est = 'naive', cal = 'none', den = 'none', bootid = k)
+                    )
+  
+  genderrace.ll <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.ll$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'llogit', bootid = k)
+                    )
+  
+  genderrace.lq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(1,TRUE)
+                  , drmethod = 'logit', dr.args = 2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.lq$aTPR %>%
+                      mutate(est = 'adjusted', cal = 'llogit', den = 'qlogit', bootid = k)
+                    )
+  
+  genderrace.ql <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args = 1
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.ql$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'llogit', bootid = k)
+                    )
+  
+  genderrace.qq <- aTPR(bootSamp, risk = preds_orig, response = X6_month_mortality
+                  , groupvar = GENDERxRACE, ref = 'M-Non_hispanic_white'
+                  , calmethod = 'logit', cal.args = list(2,TRUE)
+                  , drmethod = 'logit', dr.args =  2
+                  , cv = FALSE ,taus = taulist
+                  , se.boot = FALSE) 
+  
+  genderrace.boot <- genderrace.boot %>%
+                    bind_rows(genderrace.qq$aTPR %>%
+                        mutate(est = 'adjusted', cal = 'qlogit', den = 'qlogit', bootid = k)
+                    )
+      
+
+}
+genderrace.naive <- genderrace.boot %>%
+                  filter(est == 'naive') %>%
+                  select(GENDERxRACE, tau, TPR, bootid)
+genderrace.boot.comp <-  genderrace.boot %>%
+                      filter(est == 'adjusted') %>%
+                      select(-c(GENDERxRACE, TPR)) %>%
+                      rename(GENDERxRACE = s) %>%
+                      left_join(genderrace.naive 
+                                ) %>%
+                      rename(calmethod = cal
+                             ,densitymethod = den
+                             ,idset = bootid ) %>%
+                      select(GENDERxRACE, idset, tau, calmethod, densitymethod, TPR, aTPR)%>%
+                      arrange(tau, idset, calmethod, densitymethod)
+  
+save(genderrace.boot.comp, file = paste0(outfolder,simlab,'genderrace.RData'))
+```
+
+
+# TABLE 1
+## Make Supplemental Table - Gender
+```{r supfig.gender}
+# Read in bootstrapped estimates
+load(paste0(outfolder,simlab,'gender.Rdata'))
+
+# Merge in naive estimates to each row and compute differences
+diffs.gender <- gender.boot.comp %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(calmethod,"+",densitymethod)) %>%
+                    bind_rows(gender.boot.comp %>%
+                                  select(GENDER_CODE, idset, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = 'none')
+                    ) %>%
+                left_join(gender.boot.comp  %>%
+                            filter(GENDER_CODE == 'M') %>%
+                            select(idset, tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref)
+                       ,group ='Gender') %>%
+                rename(s = GENDER_CODE)
+
+# Get mean and CIs for delta
+diffs.gender.sum <- diffs.gender %>%
+                      group_by(group, s, tau, estimate, method, calmethod, densitymethod) %>%
+                      summarize(n = n()
+                                ,TPR.boot.mean = mean(TPR)
+                                ,TPR.boot.lower = quantile(TPR,0.025, na.rm=TRUE)
+                                ,TPR.boot.upper = quantile(TPR,0.975, na.rm=TRUE)
+                                ,aTPR.boot.mean = mean(aTPR)
+                                ,aTPR.boot.lower = quantile(aTPR,0.025, na.rm=TRUE)
+                                ,aTPR.boot.upper = quantile(aTPR,0.975, na.rm=TRUE)
+                                ,delta.boot.mean = mean(delta)
+                                ,delta.boot.lower =quantile(delta,0.025, na.rm=TRUE)
+                                ,delta.boot.upper = quantile(delta, 0.975, na.rm=TRUE)
+                                )
+```
+
+## Make Supplemental Table - Race
+```{r supfig.race}
+# Read in bootstrapped estimates
+load(paste0(outfolder,simlab,'race.Rdata'))
+
+# Merge in naive estimates to each row and compute differences
+diffs.race <- race.boot.comp %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(calmethod,"+",densitymethod)) %>%
+                    bind_rows(race.boot.comp %>%
+                                  select(race_ethnicity, idset, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = 'none')
+                    ) %>%
+                left_join(race.boot.comp  %>%
+                            filter(race_ethnicity == 'Non_hispanic_white') %>%
+                            select(idset, tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref)
+                       ,group = 'Race') %>%
+                rename(s = race_ethnicity)
+    
+
+# Get mean and CIs for delta
+diffs.race.sum <- diffs.race %>%
+                      group_by(group, s, tau, estimate, method, calmethod, densitymethod) %>%
+                      summarize(n = n()
+                                ,TPR.boot.mean = mean(TPR)
+                                ,TPR.boot.lower = quantile(TPR,0.025, na.rm=TRUE)
+                                ,TPR.boot.upper = quantile(TPR,0.975, na.rm=TRUE)
+                                ,aTPR.boot.mean = mean(aTPR)
+                                ,aTPR.boot.lower = quantile(aTPR,0.025, na.rm=TRUE)
+                                ,aTPR.boot.upper = quantile(aTPR,0.975, na.rm=TRUE)
+                                ,delta.boot.mean = mean(delta)
+                                ,delta.boot.lower =quantile(delta,0.025, na.rm=TRUE)
+                                ,delta.boot.upper = quantile(delta, 0.975, na.rm=TRUE)
+                                )
+```
+
+## Make Supplemental Figure - Gender x Race
+```{r supfig.genderrace}
+# Read in bootstrapped estimates
+load(paste0(outfolder,simlab,'genderrace.Rdata'))
+
+# Merge in naive estimates to each row and compute differences
+diffs.genderrace <- genderrace.boot.comp %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(calmethod,"+",densitymethod)) %>%
+                    bind_rows(genderrace.boot.comp %>%
+                                  select(GENDERxRACE, idset, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = 'none')
+                    ) %>%
+                left_join(genderrace.boot.comp  %>%
+                            filter(GENDERxRACE == 'M-Non_hispanic_white') %>%
+                            select(idset, tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref)
+                       ,group = 'Gender x Race') %>%
+                rename(s = GENDERxRACE)
+
+# Get mean and CIs for delta
+diffs.genderrace.sum <- diffs.genderrace %>%
+                      group_by(group, s, tau, estimate, method, calmethod, densitymethod) %>%
+                      summarize(n = n()
+                                ,TPR.boot.mean = mean(TPR, na.rm = TRUE)
+                                ,TPR.boot.lower = quantile(TPR,0.025, na.rm=TRUE)
+                                ,TPR.boot.upper = quantile(TPR,0.975, na.rm=TRUE)
+                                ,aTPR.boot.mean = mean(aTPR, na.rm = TRUE)
+                                ,aTPR.boot.lower = quantile(aTPR,0.025, na.rm=TRUE)
+                                ,aTPR.boot.upper = quantile(aTPR,0.975, na.rm=TRUE)
+                                ,delta.boot.mean = mean(delta, na.rm = TRUE)
+                                ,delta.boot.lower =quantile(delta,0.025, na.rm=TRUE)
+                                ,delta.boot.upper = quantile(delta, 0.975, na.rm=TRUE)
+                                )
+```
+
+```{r}
+options(digits=3)
+Tau = 0.3
+# naive
+tpr.naive <- diffs.gender.sum %>%
+    bind_rows(diffs.race.sum)%>%
+    bind_rows(diffs.genderrace.sum) %>%
+    ungroup() %>%
+    filter(abs(tau-Tau) <0.001 , method == 'none') %>%
+    select(tau, group, s, n
+           , TPR.boot.mean, TPR.boot.lower, TPR.boot.upper)
+
+delta.naive <- diffs.gender.sum %>%
+    bind_rows(diffs.race.sum) %>%
+    bind_rows(diffs.genderrace.sum) %>%
+    ungroup() %>%
+    filter(abs(tau-Tau) <0.001 , method == 'none') %>%
+    select(group, s, n
+           , delta.boot.mean, delta.boot.lower, delta.boot.upper)
+
+# adjusted - Q+Q 
+tpr.adj <- diffs.gender.sum %>%
+    mutate(group = 'Gender') %>%
+    bind_rows(diffs.race.sum %>%
+                mutate(group = 'Race')) %>%
+    bind_rows(diffs.genderrace.sum %>%
+                mutate(group= 'Gender x Race')) %>%
+    ungroup() %>%
+    filter(abs(tau-Tau) <0.001 , method == 'qlogit+qlogit') %>%
+    select(group, s, n, tau
+           , aTPR.boot.mean, aTPR.boot.lower, aTPR.boot.upper)
+delta.adj <- diffs.gender.sum %>%
+    mutate(group = 'Gender') %>%
+    bind_rows(diffs.race.sum %>%
+                mutate(group = 'Race')) %>%
+    bind_rows(diffs.genderrace.sum %>%
+                  mutate(group= 'Gender x Race')) %>%
+    ungroup() %>%
+    filter(abs(tau-Tau) <0.001 , method == 'qlogit+qlogit') %>%
+    select(group, s, n
+             , delta.boot.mean, delta.boot.lower, delta.boot.upper)
+```
+
+```{r}
+freq.gender <- pd %>%
+                group_by(GENDER_CODE) %>%
+                summarise(n = n()
+                          ,ndeaths = sum(X6_month_mortality)
+                          ,mortrate = mean(X6_month_mortality)
+                          ,meanrisk = mean(preds_orig)
+                          ,highrisk30 = mean(preds_orig > 0.30)) %>%
+                ungroup() %>%
+                mutate(group = 'Gender') %>%
+                rename(s = GENDER_CODE)
+freq.gender 
+
+freq.race <- pd %>%
+                group_by(race_ethnicity) %>%
+                summarise(n = n()
+                          ,ndeaths = sum(X6_month_mortality)
+                          ,mortrate = mean(X6_month_mortality)
+                          ,meanrisk = mean(preds_orig)
+                          ,highrisk30 = mean(preds_orig > 0.30)) %>%
+                ungroup() %>%
+                mutate(group = 'Race') %>%
+                rename(s = race_ethnicity)
+freq.race
+
+freq.genderrace <- pd %>%
+                group_by(GENDER_CODE, race_ethnicity) %>%
+                summarise(n = n()
+                          ,ndeaths = sum(X6_month_mortality)
+                          ,mortrate = mean(X6_month_mortality)
+                          ,meanrisk = mean(preds_orig)
+                          ,highrisk30 = mean(preds_orig > 0.30)) %>%
+                ungroup() %>%
+                mutate(group = 'Gender x Race'
+                       ,s = paste0(GENDER_CODE,"-",race_ethnicity))
+freq.genderrace
+
+
+```
+
+## FINAL
+```{r}
+freqs <- freq.gender %>%
+            bind_rows(freq.race) %>% 
+            bind_rows(freq.genderrace) %>% 
+            dplyr::select(group, s, n, ndeaths, mortrate, meanrisk, highrisk30 )
+freqs
+
+tab1 <- freqs %>% 
+          left_join(tpr.naive %>% select(-n), by = join_by(group,s)) %>%
+          left_join(delta.naive %>% select(-n), by = join_by(group,s)) %>%
+          left_join(tpr.adj %>% select(-n), by = join_by(group,s)) %>%
+          left_join(delta.adj %>% select(-n) %>% rename(adelta.boot.mean = delta.boot.mean
+                                                        ,adelta.boot.lower = delta.boot.lower
+                                                        ,adelta.boot.upper = delta.boot.upper), by = join_by(group,s)) %>%
+          mutate(TPR = paste0(round(TPR.boot.mean,3)," (",round(TPR.boot.lower,3),", ",round(TPR.boot.upper,3),")")
+                 ,delta = paste0(round(delta.boot.mean,3)," (",round(delta.boot.lower,3),", ",round(delta.boot.upper,3),")")
+                 ,aTPR = paste0(round(aTPR.boot.mean,3)," (",round(aTPR.boot.lower,3),", ",round(aTPR.boot.upper,3),")")
+                 ,adelta = paste0(round(adelta.boot.mean,3)," (",round(adelta.boot.lower,3),", ",round(adelta.boot.upper,3),")")
+                 )
+library(kableExtra)
+tab1 %>% select(group, s, n, ndeaths, TPR, delta, aTPR, adelta) %>%
+    kbl() %>%
+    kable_classic()
+```
+
+# SUPPLEMENTAL FIGURES/TABLES
+
+## Make Supplemental Figure - Gender
+```{r supfig.gender}
+# Read in bootstrapped estimates
+load(paste0(outfolder,simlab,'gender.Rdata'))
+
+# Merge in naive estimates to each row and compute differences
+diffs.gender <- gender.boot.comp %>%
+                    filter(GENDER_CODE != 'M') %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(calmethod,"+",densitymethod)) %>%
+                    bind_rows(gender.boot.comp %>%
+                                  filter(GENDER_CODE != 'M') %>%
+                                  select(GENDER_CODE, idset, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = 'none')
+                    ) %>%
+                left_join(gender.boot.comp  %>%
+                            filter(GENDER_CODE == 'M') %>%
+                            select(idset, tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref))
+
+# Get mean and CIs for delta
+diffs.gender.sum <- diffs.gender %>%
+                      group_by(GENDER_CODE, tau, estimate, method, calmethod, densitymethod) %>%
+                      summarize(n = n()
+                                ,delta.boot.mean = mean(delta)
+                                ,delta.boot.lower =quantile(delta,0.025)
+                                ,delta.boot.upper = quantile(delta, 0.975)
+                                )
+diffs.gender.sum %>% pull(n) %>% unique()
+
+# Make figure by tau
+diffs.gender.sum %>%
+  filter(tau %in% seq(0.2,0.6,0.1)) %>%
+  ggplot(aes(x = tau, y = delta.boot.mean, ymin = delta.boot.lower, ymax = delta.boot.upper)) +
+      geom_pointrange(size = 0.2) +
+      geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+      xlab(expression(paste("Decision Threshold, ",tau))) + 
+      ylab(expression(paste("Difference in (a)TPRs, ",Delta))) + 
+      facet_grid(GENDER_CODE ~ estimate*method)+
+      theme_bw() + 
+      scale_color_manual(name='Estimate Type',values = c('Adjusted' = 'black', 'Naive' = 'maroon', 'Benchmark' = 'deepskyblue')) +
+      scale_linetype_manual(name='Estimate Type',values = c('Adjusted' = 'solid', 'Naive' = 'solid', 'Benchmark' = 'solid'))  +
+      theme(legend.position="bottom")
+
+# Save plot
+ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"gender.png"),height=4,width=6, dpi = 300)
+```
+
+## Make Supplemental Figure - Race
+```{r supfig.race}
+# Read in bootstrapped estimates
+load(paste0(outfolder,simlab,'race.Rdata'))
+
+# Merge in naive estimates to each row and compute differences
+diffs.race <- race.boot.comp %>%
+                    filter(race_ethnicity != 'Non_hispanic_white') %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(calmethod,"+",densitymethod)) %>%
+                    bind_rows(race.boot.comp %>%
+                                  filter(race_ethnicity != 'Non_hispanic_white') %>%
+                                  select(race_ethnicity, idset, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = 'none')
+                    ) %>%
+                left_join(race.boot.comp  %>%
+                            filter(race_ethnicity == 'Non_hispanic_white') %>%
+                            select(idset, tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref))
+
+# Get mean and CIs for delta
+diffs.race.sum <- diffs.race %>%
+                      group_by(race_ethnicity, tau, estimate, method, calmethod, densitymethod) %>%
+                      summarize(n = n()
+                                ,delta.boot.mean = mean(delta)
+                                ,delta.boot.lower =quantile(delta,0.025)
+                                ,delta.boot.upper = quantile(delta, 0.975)
+                                )
+diffs.race.sum %>% pull(n) %>% unique()
+
+# Make figure by tau
+diffs.race.sum %>%
+  filter(tau %in% seq(0.2,0.6,0.1)) %>%
+  ggplot(aes(x = tau, y = delta.boot.mean, ymin = delta.boot.lower, ymax = delta.boot.upper)) +
+      geom_pointrange(size = 0.2) +
+      geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+      xlab(expression(paste("Decision Threshold, ",tau))) + 
+      ylab(expression(paste("Difference in (a)TPRs, ",Delta))) + 
+      facet_grid(race_ethnicity ~ estimate*method)+
+      theme_bw() + 
+      scale_color_manual(name='Estimate Type',values = c('Adjusted' = 'black', 'Naive' = 'maroon', 'Benchmark' = 'deepskyblue')) +
+      scale_linetype_manual(name='Estimate Type',values = c('Adjusted' = 'solid', 'Naive' = 'solid', 'Benchmark' = 'solid'))  +
+      theme(legend.position="bottom")
+
+# Save plot
+ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"race.png"),height=4,width=6, dpi = 300)
+```
+
+
+## Make Supplemental Figure - GenderXRace
+```{r supfig.genderrace}
+# Read in bootstrapped estimates
+load(paste0(outfolder,simlab,'genderrace.Rdata'))
+
+# Merge in naive estimates to each row and compute differences
+diffs.genderrace <- genderrace.boot.comp %>%
+                    filter(GENDERxRACE != 'M-Non_hispanic_white') %>%
+                    mutate(estimate= 'adjusted'
+                           , method = paste0(calmethod,"+",densitymethod)) %>%
+                    bind_rows(genderrace.boot.comp %>%
+                                  filter(GENDERxRACE != 'M-Non_hispanic_white') %>%
+                                  select(GENDERxRACE, idset, tau, TPR) %>%
+                                  unique() %>%
+                                  mutate(estimate = 'naive'
+                                         , method = 'none')
+                    ) %>%
+                left_join(genderrace.boot.comp  %>%
+                            filter(GENDERxRACE == 'M-Non_hispanic_white') %>%
+                            select(idset, tau, TPR) %>%
+                            unique() %>%
+                            rename(TPR.ref = TPR)
+                          ) %>%
+                mutate(delta = if_else(estimate == 'naive', TPR-TPR.ref, aTPR-TPR.ref))
+
+# Get mean and CIs for delta
+diffs.genderrace.sum <- diffs.genderrace %>%
+                      group_by(GENDERxRACE, tau, estimate, method, calmethod, densitymethod) %>%
+                      summarize(n = n()
+                                ,delta.boot.mean = mean(delta)
+                                ,delta.boot.lower =quantile(delta,0.025)
+                                ,delta.boot.upper = quantile(delta, 0.975)
+                                )
+diffs.genderrace.sum %>% pull(n) %>% unique()
+
+# Make figure by tau
+diffs.genderrace.sum %>%
+  filter(tau %in% seq(0.2,0.6,0.1)) %>%
+  ggplot(aes(x = tau, y = delta.boot.mean, ymin = delta.boot.lower, ymax = delta.boot.upper)) +
+      geom_pointrange(size = 0.2) +
+      geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+      xlab(expression(paste("Decision Threshold, ",tau))) + 
+      ylab(expression(paste("Difference in (a)TPRs, ",Delta))) + 
+      facet_grid(GENDERxRACE ~ estimate*method)+
+      theme_bw() + 
+      scale_color_manual(name='Estimate Type',values = c('Adjusted' = 'black', 'Naive' = 'maroon', 'Benchmark' = 'deepskyblue')) +
+      scale_linetype_manual(name='Estimate Type',values = c('Adjusted' = 'solid', 'Naive' = 'solid', 'Benchmark' = 'solid'))  +
+      theme(legend.position="bottom")
+
+# Save plot
+ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"genderrace.png"),height=8,width=6, dpi = 300)
+```
