@@ -14,7 +14,7 @@ Code for reproducing the simulation figures are available:
   - Supplemental Figures S12-S23: Supplemental-Sim-QQPlots-Template.Rmd
 
 ### Bootstrapping Coverage Simulation
-A smaller simulation study was conducted to explore the coverage of the confidence intervals used in the real world data application. Code for reproducing the simulation is available in R1-addtl-bootstrap-var-comp.Rmd.
+A smaller simulation study was conducted to explore the coverage of the confidence intervals used in the real world data application. Code for reproducing the simulation is available in R1-addtl-bootstrap-var-comp.Rmd. Code for evaluating coverage performance availalbe in Coverage-GAM-1Mmean.Rmd and run-coverage-GAM1Mmean.Rmd
 
 ## Real World Example
 The Palliative Connect dataset is derived from electronic health records data and cannot be publicly shared. However, the code use for analysis and figure generation is provided.
