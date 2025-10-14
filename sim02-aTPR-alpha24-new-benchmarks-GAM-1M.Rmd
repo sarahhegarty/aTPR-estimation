@@ -1,0 +1,701 @@
+---
+title: "sim02-alpha24-new-benchmarks-GAM2"
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+params:
+  nickname: '1k'
+  n2: 1000
+  seed: 1983471
+  taus: !r seq(0.01,0.99,0.01)
+  k: 20
+  M: 5
+---
+
+```{r sim_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+timestart = Sys.time()
+simid = paste0('sim02-aTPR-alpha24-np-',params$nickname)
+folder = 'simout/'
+```
+
+# Load packages
+```{r sim_libs}
+library(tidyr)
+library(dplyr)
+library(stats)
+library(ggplot2)
+library(patchwork)
+library(mgcv)
+library(splines)
+library(microbenchmark) 
+library(parallel) 
+library(foreach)
+library(iterators) 
+library(doParallel)
+```
+
+# Load fairRisk package and other custom functions
+```{r sim_loadfunc}
+library(fairRisk)
+
+cloglog <- function(z){
+  log(-log(1-z))
+}
+#source('simfuncs/dataGen.R')
+#source('simfuncs/getTheoretical.R')
+```
+
+# Session Info
+```{r sim_session}
+sessionInfo()
+```
+
+# Render parameters
+```{r sim_parms}
+params
+```
+
+# Define data generation parameter settings
+```{r sim_parms_datagen, eval = TRUE}
+# Define data generation settings
+set_n = list(c(1000,params$n2))
+set_alpha = list(c(2,4))
+set_beta = list(c(8,8))
+set_sigeps = list(c(0.1,0.1),c(0.1,0.2))
+set_h = list(c("logit","logit"),c("cloglog","cloglog"))
+set_theta.b = list(c(1,1),c(1,0.8),c(1,0.6))
+set_theta.a = list(c(0,0),c(0,-0.25),c(0,-0.5),c(0,0.25),c(0,0.5))
+
+# Enumerate Data Generation Scenarios
+settings <- expand.grid(set_theta.a, set_theta.b, set_h, set_sigeps,  set_beta, set_alpha, set_n)
+colnames(settings) <- c('theta.a','theta.b','h','sigeps','beta','alpha','n')
+settings <- settings %>%
+              dplyr::select(n, alpha, beta, h, sigeps, theta.b, theta.a)
+nSettings <- dim(settings)[1]
+settings$setting_id <- seq(1,nSettings,1)
+#save(settings,file=paste0('simout/',simid,'_settings.RData'))
+
+thesets <- settings
+
+```
+
+# Define additional parameters for MC replicates
+```{r sim_parms_mc}
+# Define estimation parameters
+mytau = params$taulist
+naivelist = c('naive (np)','naive (mb-llogit)','naive (mb-qlogit)','theoretical (naive)')
+largeN = 1E6
+set.seed(params$seed)
+```
+
+
+# Large Sample Benchmark
+```{r def_getLargeData}
+getLargeData <- function(alpha, beta, sigma, h, N, a,b ){
+  # Group 1
+  df1 <- data.frame(s = 1, pi.X = rbeta(N[1], alpha[1], beta[1]), eps = rnorm(N[1],0,sigma[1]))
+  df1$Y <- rbinom(N[1], size = 1, prob = df1$pi.X)
+   if(h == "logit"){
+  df1 <- df1 %>%
+          mutate(a = a[1]
+                 ,b = b[1]
+                 ,logit.r = a[1] + b[1] * logit(pi.X) + eps
+                 ,r = expit(logit.r))
+  }else if(h == "cloglog"){
+      df1 <- df1 %>%
+          mutate(a = a[1]
+                 ,b = b[1]
+                 ,logit.r = a[1] + b[1] * cloglog(pi.X) + eps
+                 ,r = expit(logit.r))
+  }
+  
+  # Group 2
+  df2 <- data.frame(s = 2, pi.X = rbeta(N[2], alpha[2], beta[2]), eps = rnorm(N[2],0,sigma[2]))
+  df2$Y <- rbinom(N[2], size = 1, prob = df2$pi.X)
+  
+  # Define R
+    if(h == "logit"){
+  df2 <- df2 %>%
+          mutate(a = a[2]
+                 ,b = b[2]
+                 ,logit.r = a[2] + b[2] * logit(pi.X) + eps
+                 ,r = expit(logit.r))
+  }else if(h == "cloglog"){
+      df2 <- df2 %>%
+          mutate(a = a[2]
+                 ,b = b[2]
+                 ,logit.r = a[2] + b[2] * cloglog(pi.X) + eps
+                 ,r = expit(logit.r))
+  }
+
+  
+  df <- df1 %>% bind_rows(df2)
+  
+  # Group 2 - Counterfactual (ref 1)
+  df2c1 <- data.frame(s = 2, pi.X = rbeta(N[2], alpha[1], beta[1]), eps = rnorm(N[1],0,sigma[1]))
+  df2c1$Y <- rbinom(N[2], size = 1, prob = df2c1$pi.X)
+  
+  # Define R
+    if(h == "logit"){
+  df2c1 <- df2c1 %>%
+          mutate(a = a[2]
+                 ,b = b[2]
+                 ,logit.r = a[2] + b[2] * logit(pi.X) + eps
+                 ,r = expit(logit.r))
+  }else if(h == "cloglog"){
+      df2c1 <- df2c1 %>%
+          mutate(a = a[2]
+                 ,b = b[2]
+                 ,logit.r = a[2] + b[2] * cloglog(pi.X) + eps
+                 ,r = expit(logit.r))
+  }
+
+   dfc1 <- df1 %>% bind_rows(df2c1)
+   
+  # Group 1 - Counterfactual (ref 2)
+  df1c2 <- data.frame(s = 1, pi.X = rbeta(N[2], alpha[2], beta[2]), eps = rnorm(N[2],0,sigma[2]))
+  df1c2$Y <- rbinom(N[2], size = 1, prob = df1c2$pi.X)
+  
+  # Define R
+    if(h == "logit"){
+  df1c2 <- df1c2 %>%
+          mutate(a = a[1]
+                 ,b = b[1]
+                 ,logit.r = a[1] + b[1] * logit(pi.X) + eps
+                 ,r = expit(logit.r))
+  }else if(h == "cloglog"){
+      df1c2 <- df1c2 %>%
+          mutate(a = a[1]
+                 ,b = b[1]
+                 ,logit.r = a[1] + b[1] * cloglog(pi.X) + eps
+                 ,r = expit(logit.r))
+  }
+
+   dfc2 <- df1c2 %>% bind_rows(df2)
+ 
+  out <- list(df = df, dfc1 = dfc1, dfc2 = dfc2)
+  return(out)
+}  
+```
+
+# GAM  
+```{r def_fitGAM}
+fitGAM <- function(data){
+  df1 <- data %>% filter(s == 1)
+  df2 <- data %>% filter(s == 2)
+  
+  # get true risk based on r (pi.r) with GAM
+  gam.fit1 <- with(df1, mgcv:::gam(Y ~ s(logit.r, bs= 'cr'), family = 'binomial'))
+  df1$pi.r <- gam.fit1$fitted.values
+  
+  # get true risk based on r (pi.r) with GAM
+  gam.fit2 <- with(df2, mgcv:::gam(Y ~ s(logit.r, bs= 'cr'), family = 'binomial'))
+  df2$pi.r <- gam.fit2$fitted.values
+  
+  # stack
+  df <- df1 %>% bind_rows(df2) %>%
+            mutate(ref1 = if_else(s==1,1,0)
+                   ,ref2 = if_else(s==2,1,0))
+  
+  # get DR
+  dr.fit1 <- with(df, mgcv:::gam(ref1 ~ s(pi.r, bs= 'cr'), family = 'binomial'))
+  df$p.ref1 <- dr.fit1$fitted.values
+  
+  dr.fit2 <- with(df, mgcv:::gam(ref2 ~ s(pi.r, bs= 'cr'), family = 'binomial'))
+  df$p.ref2 <- dr.fit2$fitted.values
+  N1 <- nrow(df1)
+  N2 <- nrow(df2)
+  df <- df %>%
+            mutate(wref1 = if_else(s == 1, 1, p.ref1/(1-p.ref1)*N2/N1)
+                 ,wref2 = if_else(s == 2, 1, p.ref2/(1-p.ref2)*N1/N2))
+
+  return(df)
+}
+```
+
+# QQ  
+```{r def_fitQQ}
+fitQQ <- function(data){
+  df1 <- data %>% filter(s == 1)
+  df2 <- data %>% filter(s == 2)
+  
+  # get true risk based on r (pi.r) with GAM
+  gam.fit1 <- with(df1, glm(Y ~ poly(logit.r, degree=2), family = 'binomial'))
+  df1$pi.r <- gam.fit1$fitted.values
+  
+  # get true risk based on r (pi.r) with GAM
+  gam.fit2 <- with(df2, glm(Y ~ poly(logit.r,degree=2), family = 'binomial'))
+  df2$pi.r <- gam.fit2$fitted.values
+  
+  # stack
+  df <- df1 %>% bind_rows(df2) %>%
+            mutate(ref1 = if_else(s==1,1,0)
+                   ,ref2 = if_else(s==2,1,0))
+  
+  # get DR
+  dr.fit1 <- with(df, glm(ref1 ~ poly(pi.r, degree=2), family = 'binomial'))
+  df$p.ref1 <- dr.fit1$fitted.values
+  
+  dr.fit2 <- with(df, glm(ref2 ~ poly(pi.r, degree=2), family = 'binomial'))
+  df$p.ref2 <- dr.fit2$fitted.values
+  N1 <- nrow(df1)
+  N2 <- nrow(df2)
+  df <- df %>%
+            mutate(wref1 = if_else(s == 1, 1, p.ref1/(1-p.ref1)*N2/N1)
+                 ,wref2 = if_else(s == 2, 1, p.ref2/(1-p.ref2)*N1/N2))
+
+  return(df)
+}
+```
+
+# aTPRs  
+```{r}
+fitaTPRs <- function(data, label, taus = seq(0.01,0.99,0.01)){
+# Estimate aTPR 
+aTPR_ref1 <- get_aTPR(data = data, orig_risk = r
+              , cal_risk = pi.r
+              , dens_ratio = wref1
+              , groupvar = s, taus = taus) %>%
+              filter(s == 2)
+
+
+aTPR_ref2 <- get_aTPR(data = data, orig_risk = r
+              , cal_risk = pi.r
+              , dens_ratio = wref2
+              , groupvar = s, taus = taus) %>%
+              filter(s == 1)
+    
+# Get standard TPR
+TPR.unadj <- get_naiveTPR(data = data, risk = r, response = Y,groupvar =s, taus = taus)
+
+TPRs <- TPR.unadj %>%
+            left_join(aTPR_ref1 %>% rename(aTPR_ref1 = aTPR) %>%
+                        bind_rows(TPR.unadj %>% 
+                                    filter(s == 1) %>% 
+                                    rename(aTPR_ref1 = TPR))
+                      ,by = join_by(s, tau)) %>%
+            left_join(aTPR_ref2 %>% rename(aTPR_ref2 = aTPR) %>%
+                        bind_rows(TPR.unadj %>% 
+                                    filter(s == 2) %>% 
+                                    rename(aTPR_ref2 = TPR))
+                           ,by = join_by(s, tau)) %>%
+            mutate(type = label)
+
+return(TPRs)
+}
+```
+
+# Run for all settings
+```{r runOverSettings}
+comps <- NULL
+k <- params$k
+for(i in 1:params$M){
+  myset <- thesets[k,]
+  outk <- getLargeData(alpha = myset$alpha[[1]]
+                   ,beta = myset$beta[[1]]
+                   ,sigma = myset$sigeps[[1]]
+                   ,h = myset$h[[1]][1]
+                   ,N = c(largeN,largeN)
+                   ,a = myset$theta.a[[1]]
+                   ,b = myset$theta.b[[1]])
+  
+  setk <- outk[["df"]]
+  counter_ref1k <- outk[["dfc1"]]
+  counter_ref2k <- outk[["dfc2"]]
+  
+  # QQ
+  setk.qq <- fitQQ(setk)
+  tpr.qq <- fitaTPRs(setk.qq, label = 'QQ')
+  
+  # GAM
+  setk.gam <- fitGAM(setk)
+  tpr.gam <- fitaTPRs(setk.gam, label = 'GAM')
+  
+  # Counterfactual
+  tpr.counter1 <- get_naiveTPR(data = counter_ref1k, risk = r, response = Y,groupvar =s, taus = params$taus)
+  tpr.counter2 <- get_naiveTPR(data = counter_ref2k, risk = r, response = Y,groupvar =s, taus = params$taus)
+
+  tpr.counter <- tpr.counter1 %>%
+                    rename(aTPR_ref1 = TPR ) %>%
+                    left_join(tpr.counter2 %>%
+                                rename(aTPR_ref2 = TPR)
+                              ,by = join_by(s, tau))
+  # TPR 
+  comps <- comps %>%
+              bind_rows(tpr.qq %>% mutate(rep = i)) %>%
+              bind_rows(tpr.gam %>% mutate(rep = i)) %>%
+              bind_rows(tpr.counter %>% mutate(type = "CF", rep = i)) 
+           
+}
+save(comps,file=paste0("r1out/comps-GAM-QQ-CF-setting-",k,".Rdata"))
+```
+ 
+```{r}
+comps %>%
+  filter(s == 2, rep !=10) %>%
+  ggplot() + 
+    geom_line(aes(tau, TPR, group = paste(type,s), color=factor(s)),linetype = 'solid') + 
+    geom_line(aes(tau, aTPR_ref1, group = paste(type,s), color=paste(type,s)), linetype = 'dashed') + 
+    theme_bw() +
+    facet_wrap(~rep)
+#ggsave(paste0("Benchmark-Comparison-grid",k,".png"))
+
+comps %>%
+  filter(s == 2) %>%
+  ggplot() + 
+    geom_line(aes(tau, TPR, group = rep, color=rep),linetype = 'solid') + 
+    geom_line( aes(tau, aTPR_ref1, group = rep, color=rep), linetype = 'dashed') + 
+    theme_bw() +
+    facet_wrap(~type)
+#ggsave(paste0("Benchmark-Replication-10reps",k,".png"))
+```
+ 
+```{r}
+load(paste0("simout/sim01-aTPR-alpha24-1k_setting_",k,"_with_benchmarks.RData"))
+
+simsets <- out$settings
+diffs_ref1 <- out[["df_diffs (refgp = 1)"]] %>%
+                            mutate(setting_id = k
+                                   ,n1 = simsets$n[1]
+                                   ,n2 = simsets$n[2]
+                                   ,alpha1 = simsets$alpha[1]
+                                   ,alpha2 = simsets$alpha[2]
+                                   ,beta1 = simsets$beta[1]
+                                   ,beta2 = simsets$beta[2]
+                                   ,theta.a1 = simsets$theta.a[1]
+                                   ,theta.a2 = simsets$theta.a[2]
+                                   ,theta.b1 = simsets$theta.b[1]
+                                   ,theta.b2 = simsets$theta.b[2]
+                                   ,sigeps1 = simsets$sigeps[1]
+                                   ,sigeps2 = simsets$sigeps[2]
+                                   ,h1 = simsets$h[1]
+                                   ,h2 = simsets$h[2]
+                          ) 
+
+QQref1<- diffs_ref1 %>%
+            filter(est == 'adjusted', cal == 'qlogit', den == 'qlogit') 
+QQref1.sum <- QQref1%>%
+            group_by(tau) %>%
+            summarize(TPR.mean = mean(TPR.ref)
+                      ,TPR.lower= quantile(TPR.ref,0.025)
+                      ,TPR.upper=quantile(TPR.ref,0.975)
+                      ,aTPR.mean = mean(aTPR2)
+                      ,aTPR.lower= quantile(aTPR2,0.025)
+                      ,aTPR.upper=quantile(aTPR2,0.975)
+                      ,delta.mean = mean(delta)
+                      ,delta.lower = quantile(delta,0.025)
+                      ,delta.upper = quantile(delta,0.975))
+
+
+UNref1 <- diffs_ref1 %>%
+            filter(est == 'naive (np)') 
+UNref1.sum <- UNref1 %>%
+            group_by(tau) %>%
+            summarize(TPR.mean = mean(TPR.ref)
+                      ,TPR.lower= quantile(TPR.ref,0.025)
+                      ,TPR.upper=quantile(TPR.ref,0.975)
+                      ,delta.mean = mean(delta)
+                      ,delta.lower = quantile(delta,0.025)
+                      ,delta.upper = quantile(delta,0.975))
+
+diffs_ref2 <- out[["df_diffs (refgp = 2)"]] %>%
+                            mutate(setting_id = k
+                                   ,n1 = simsets$n[1]
+                                   ,n2 = simsets$n[2]
+                                   ,alpha1 = simsets$alpha[1]
+                                   ,alpha2 = simsets$alpha[2]
+                                   ,beta1 = simsets$beta[1]
+                                   ,beta2 = simsets$beta[2]
+                                   ,theta.a1 = simsets$theta.a[1]
+                                   ,theta.a2 = simsets$theta.a[2]
+                                   ,theta.b1 = simsets$theta.b[1]
+                                   ,theta.b2 = simsets$theta.b[2]
+                                   ,sigeps1 = simsets$sigeps[1]
+                                   ,sigeps2 = simsets$sigeps[2]
+                                   ,h1 = simsets$h[1]
+                                   ,h2 = simsets$h[2]
+                          ) %>%
+                        mutate(delta = -delta) # flip to group 2 - group 1
+
+QQref2 <- diffs_ref2 %>%
+            filter(est == 'adjusted', cal == 'qlogit', den == 'qlogit') 
+QQref2.sum <- QQref2 %>%
+            group_by(tau) %>%
+            summarize(TPR.mean = mean(TPR.ref)
+                      ,TPR.lower= quantile(TPR.ref,0.025)
+                      ,TPR.upper=quantile(TPR.ref,0.975)
+                      ,aTPR.mean = mean(aTPR2)
+                      ,aTPR.lower= quantile(aTPR2,0.025)
+                      ,aTPR.upper=quantile(aTPR2,0.975)
+                      ,delta.mean = mean(delta)
+                      ,delta.lower = quantile(delta,0.025)
+                      ,delta.upper = quantile(delta,0.975))
+
+
+UNref2 <- diffs_ref2 %>%
+            filter(est == 'naive (np)') 
+UNref2.sum <- UNref2 %>%
+            group_by(tau) %>%
+            summarize(TPR.mean = mean(TPR.ref)
+                      ,TPR.lower= quantile(TPR.ref,0.025)
+                      ,TPR.upper=quantile(TPR.ref,0.975)
+                      ,delta.mean = mean(delta)
+                      ,delta.lower = quantile(delta,0.025)
+                      ,delta.upper = quantile(delta,0.975))
+```
+  
+  
+```{r}
+ggplot() + 
+  geom_line(data = comps %>% filter(type =="QQ"), aes(tau, TPR, group = s, color=s),linetype = 'solid') + 
+    geom_line(data = comps %>% filter(type =="QQ"), aes(tau, aTPR_ref1, group = s, color=s),linetype = 'dashed') + 
+    geom_pointrange(data = QQref1.sum, aes(tau, y = TPR.mean, ymin = TPR.lower, ymax = TPR.upper), color='gray',size=0.1) + 
+    geom_pointrange(data = QQref1.sum, aes(tau, y = aTPR.mean, ymin = aTPR.lower, ymax = aTPR.upper), color='blue',size=0.1) +  
+  theme_bw() +
+  facet_wrap(~rep) +
+  ggtitle("QQ curve with QQ points")
+
+ggplot() + 
+    geom_line(data = comps , aes(tau, TPR, group = paste(rep,s), color=s),linetype = 'solid') + 
+    geom_line(data = comps, aes(tau, aTPR_ref1, group = paste(rep,s), color=s),linetype = 'dashed') + 
+    geom_pointrange(data = QQref1.sum, aes(tau, y = TPR.mean, ymin = TPR.lower, ymax = TPR.upper), color='gray',size=0.1) + 
+    geom_pointrange(data = QQref1.sum, aes(tau, y = aTPR.mean, ymin = aTPR.lower, ymax = aTPR.upper), color='black',size=0.1) +  
+  theme_bw() +
+  facet_wrap(~type) +
+  ggtitle("QQ points")
+
+ggplot() + 
+  geom_line(data = tpr.gam, aes(tau, TPR, group = s, color=s),linetype = 'solid') + 
+  geom_line(data = tpr.gam, aes(tau, aTPR_ref1, group = s, color=s),linetype = 'dashed') + 
+  geom_pointrange(data = QQref1.sum, aes(tau, y = TPR.mean, ymin = TPR.lower, ymax = TPR.upper), color='gray',size=0.1) + 
+  geom_pointrange(data = QQref1.sum, aes(tau, y = aTPR.mean, ymin = aTPR.lower, ymax = aTPR.upper), color='black',size=0.1) +  
+theme_bw() +
+  ggtitle("GAM curve with QQ points")
+
+```
+  
+  
+```{r}
+dcomps_ref1 <- comps %>%
+                  filter(s == 2) %>%
+                  rename(aTPR2 = aTPR_ref1) %>%
+                  mutate(TPR2 = if_else(type == "CF", aTPR_ref2, TPR)) %>%
+                  left_join(comps %>%
+                        filter(s == 1) %>%
+                        mutate(TPR.ref = if_else(type == "CF", aTPR_ref1, TPR)) %>%
+                        select(TPR.ref, tau, type, rep)
+                      ,by = join_by(tau, type, rep)) %>%
+            select(rep, type, tau, TPR.ref, TPR2, aTPR2) %>%
+            mutate(delta.un = TPR2 - TPR.ref
+                   ,delta.adj = aTPR2 - TPR.ref)
+
+save(dcomps_ref1, file=paste0("r1out/dcomps-ref1-GAM-QQ-CF-setting-",k,".Rdata"))
+
+dcomps_ref2 <- comps %>%
+                 filter(s == 1) %>%
+                        rename(aTPR1 = aTPR_ref2) %>%
+                        mutate(TPR1 = if_else(type == "CF", aTPR_ref1, TPR)) %>%
+                        left_join(comps %>%
+                              filter(s == 2) %>%
+                              mutate(TPR.ref = if_else(type == "CF", aTPR_ref2, TPR)) %>%
+                              select(TPR.ref, tau, type, rep)
+                            ,by = join_by(tau, type, rep)) %>%
+                  select(rep, type, tau, TPR.ref, TPR1, aTPR1) %>%
+                  mutate(delta.un = TPR.ref - TPR1
+                         ,delta.adj = TPR.ref - aTPR1)
+
+save(dcomps_ref2, file =paste0("r1out/dcomps-ref2-GAM-QQ-CF-setting-",k,".Rdata"))
+
+```
+
+```{r}
+ggplot() + 
+    geom_line(data = dcomps_ref1, aes(tau, delta.un, group = rep), color='gray', linetype = 'solid') + 
+    geom_line(data = dcomps_ref1, aes(tau, delta.adj, group = rep), color='blue', linetype = 'dashed') + 
+    geom_pointrange(data = QQref1.sum, aes(tau, y = delta.mean, ymin = delta.lower, ymax = delta.upper), color='blue',size=0.1) + 
+    geom_pointrange(data = UNref1.sum, aes(tau, y = delta.mean, ymin = delta.lower, ymax = delta.upper), color='gray',size=0.1) +  
+  theme_bw() +
+  facet_wrap(~type) +
+  ggtitle("Delta (ref 1)")
+
+ggplot() + 
+    geom_line(data = dcomps_ref2, aes(tau, delta.un, group = rep), color='gray', linetype = 'solid') + 
+    geom_line(data = dcomps_ref2, aes(tau, delta.adj, group = rep), color='blue', linetype = 'dashed') + 
+    geom_pointrange(data = QQref2.sum, aes(tau, y = delta.mean, ymin = delta.lower, ymax = delta.upper), color='blue',size=0.1) + 
+    geom_pointrange(data = UNref2.sum, aes(tau, y = delta.mean, ymin = delta.lower, ymax = delta.upper), color='gray',size=0.1) +  
+  theme_bw() +
+  facet_wrap(~type) +
+  ggtitle("Delta (ref 2)")
+
+dcomps1.sum <- dcomps_ref1 %>%
+                group_by(type, tau) %>%
+                summarize(delta.mean = mean(delta.adj)
+                          ,delta.lower = quantile(delta.adj,0.025)
+                          ,delta.upper = quantile(delta.adj,0.975))
+
+dcomps2.sum <- dcomps_ref2 %>%
+                group_by(type, tau) %>%
+                summarize(delta.mean = mean(delta.adj)
+                          ,delta.lower = quantile(delta.adj,0.025)
+                          ,delta.upper = quantile(delta.adj,0.975))
+ggplot() + 
+    geom_line(data = dcomps_ref1, aes(tau, delta.adj, group = paste(type,rep), color=type) , linetype = 'dashed') + 
+    geom_line(data = dcomps1.sum, aes(tau, delta.mean, group = type, color=type) , linetype = 'solid', linewidth =2) + 
+    geom_pointrange(data = QQref1.sum, aes(tau, y = delta.mean, ymin = delta.lower, ymax = delta.upper), color='blue',size=0.1) + 
+    theme_bw() +
+    ggtitle("Delta (ref 1)")
+
+ggplot() + 
+    geom_line(data = dcomps_ref2, aes(tau, delta.adj, group = paste(type,rep), color=type) , linetype = 'dashed') + 
+    geom_line(data = dcomps2.sum, aes(tau, delta.mean, group = type, color=type) , linetype = 'solid', linewidth =2) + 
+    geom_pointrange(data = QQref2.sum, aes(tau, y = delta.mean, ymin = delta.lower, ymax = delta.upper), color='blue',size=0.1) + 
+    theme_bw() +
+    ggtitle("Delta (ref 2) ")
+#ggsave(paste0("Delta-10reps-",k,".png"))
+```
+
+```{r}
+ADJref1 <- diffs_ref1 %>%
+            filter(est == 'adjusted') 
+ADJref1.sum <-ADJref1 %>%
+            group_by(cal, den, tau) %>%
+            summarize(TPR.mean = mean(TPR.ref)
+                      ,TPR.lower= quantile(TPR.ref,0.025)
+                      ,TPR.upper=quantile(TPR.ref,0.975)
+                      ,aTPR.mean = mean(aTPR2)
+                      ,aTPR.lower= quantile(aTPR2,0.025)
+                      ,aTPR.upper=quantile(aTPR2,0.975)
+                      ,delta.mean = mean(delta)
+                      ,delta.lower = quantile(delta,0.025)
+                      ,delta.upper = quantile(delta,0.975)) %>%
+            mutate(calden = paste("est: ",cal,"+",den))
+
+ggplot()+
+    geom_pointrange(data = UNref1.sum %>% filter(tau == 0.2) %>% mutate(type = " naive"), aes(type, y = delta.mean, ymin = delta.lower, ymax = delta.upper),color='maroon') +
+    geom_pointrange(data = ADJref1.sum %>% filter(tau == 0.2), aes(calden, y = delta.mean, ymin = delta.lower, ymax = delta.upper)) +
+    geom_point(data = dcomps_ref1 %>% filter( tau == 0.2) %>% mutate(type = paste(" bench", type)), aes(type, y = delta.adj),color='deepskyblue',shape=20) +
+   geom_pointrange(data = dcomps1.sum %>% filter( tau == 0.2) %>% mutate(type = paste(" bench", type)), aes(type, y = delta.mean, ymin = delta.lower, ymax = delta.upper),color='deepskyblue') +
+    theme_bw() + 
+    coord_flip() +
+    ggtitle("Reference Group 1")
+```
+
+```{r}
+bias.ref1 <- ADJref1 %>%
+                mutate(tau = round(tau,3)) %>%
+                left_join(dcomps1.sum %>% mutate(tau = round(tau,3)), by = join_by(tau) )   %>%
+                mutate(bias = delta - delta.mean ) 
+bias.ref1.sum <- bias.ref1 %>%
+    group_by(tau, type, cal, den) %>%
+    summarize(bias = mean(bias))
+save(bias.ref1.sum, file = paste0("r1out/bias-ref1-setting-",k,".RData"))
+
+bias.ref1.sum %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() +
+    geom_line(aes(tau, bias, group = calden,color=calden)) +
+    theme_bw() + 
+    geom_hline(yintercept = 0) +
+    facet_grid( ~ type)
+
+bias.ref1.sum %>%
+    filter(tau == 0.2) %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() +
+    geom_point(aes(tau, bias, group = calden,color=calden)) +
+    theme_bw() + 
+    geom_hline(yintercept = 0) +
+    facet_grid( ~ type)
+```
+
+# Reference Group 2
+```{r}
+ADJref2 <- diffs_ref2 %>%
+            filter(est == 'adjusted') 
+ADJref2.sum <-ADJref2 %>%
+            group_by(cal, den, tau) %>%
+            summarize(TPR.mean = mean(TPR.ref)
+                      ,TPR.lower= quantile(TPR.ref,0.025)
+                      ,TPR.upper=quantile(TPR.ref,0.975)
+                      ,aTPR.mean = mean(aTPR2)
+                      ,aTPR.lower= quantile(aTPR2,0.025)
+                      ,aTPR.upper=quantile(aTPR2,0.975)
+                      ,delta.mean = mean(delta)
+                      ,delta.lower = quantile(delta,0.025)
+                      ,delta.upper = quantile(delta,0.975)) %>%
+            mutate(calden = paste("est: ",cal,"+",den))
+
+ggplot()+
+    geom_pointrange(data = UNref2.sum %>% filter(tau == 0.2) %>% mutate(type = " naive"), aes(type, y = delta.mean, ymin = delta.lower, ymax = delta.upper),color='maroon') +
+    geom_pointrange(data = ADJref2.sum %>% filter(tau == 0.2), aes(calden, y = delta.mean, ymin = delta.lower, ymax = delta.upper)) +
+    geom_point(data = dcomps_ref2 %>% filter( tau == 0.2) %>% mutate(type = paste(" bench", type)), aes(type, y = delta.adj),color='deepskyblue',shape=20) +
+   geom_pointrange(data = dcomps2.sum %>% filter( tau == 0.2) %>% mutate(type = paste(" bench", type)), aes(type, y = delta.mean, ymin = delta.lower, ymax = delta.upper),color='deepskyblue') +
+    theme_bw() + 
+    coord_flip() +
+    ggtitle("Reference Group 2")
+```
+
+
+```{r}
+bias.ref2 <- ADJref2 %>%
+              mutate(tau = round(tau,3)) %>%
+              left_join(dcomps2.sum %>% mutate(tau = round(tau,3)), by = join_by(tau) ) %>%
+              mutate(bias = delta - delta.mean ) 
+
+bias.ref2.sum <- bias.ref2 %>%
+    group_by(tau, type, cal, den) %>%
+    summarize(bias = mean(bias))
+save(bias.ref2.sum, file = paste0("r1out/bias-ref2-setting-",k,".RData"))
+
+bias.ref2.sum %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() +
+    geom_line(aes(tau, bias, group = calden,color=calden)) +
+    theme_bw() + 
+    geom_hline(yintercept = 0) +
+    facet_grid( ~ type)
+
+bias.ref2.sum %>%
+    filter(tau == 0.2) %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() +
+    geom_point(aes(tau, bias, group = calden,color=calden)) +
+    theme_bw() + 
+    geom_hline(yintercept = 0) +
+    facet_grid( ~ type)
+```
+
+
+```{r}
+bias.ref2 %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() + 
+    geom_line(aes(tau, delta, group = paste(rep)),color='gray',linetype='dashed') +
+    geom_line(aes(tau, delta.mean, group = paste(rep)),color='blue') +
+    theme_bw() + 
+    facet_wrap(type~calden)
+bias.ref2 %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() + 
+    geom_line(aes(tau, bias, group = paste(rep)),color='gray',linetype='dashed') + 
+    geom_line(data = bias.ref2.sum %>% mutate(calden = paste(cal,den)), aes(tau, bias),color='blue') +
+    theme_bw() + 
+    facet_wrap(type~calden)
+
+bias.ref1 %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() + 
+    geom_line(aes(tau, delta, group = paste(rep)),color='gray',linetype='dashed') +
+    geom_line(aes(tau, delta.mean, group = paste(rep)),color='blue') +
+    theme_bw() + 
+    facet_wrap(type~calden)
+bias.ref1 %>%
+    mutate(calden = paste(cal,den)) %>%
+    ggplot() + 
+    geom_line(aes(tau, bias, group = paste(rep)),color='gray',linetype='dashed') +
+    geom_line(data = bias.ref1.sum %>% mutate(calden = paste(cal,den)), aes(tau, bias),color='blue') +
+    theme_bw() + 
+    facet_wrap(type~calden)
+```

@@ -1,0 +1,84 @@
+---
+title: "Run alt-benchmarks"
+author: "Sarah Hegarty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r outersetup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+outer_start <- Sys.time()
+```
+
+# Install fairRisk package
+```{r outer_installpkg}
+library(usethis)
+library(devtools)
+devtools::install_github("sarahhegarty/fairRisk")
+packageVersion("fairRisk")
+```
+
+# Working Directory and Session Info
+
+
+```{r outer_rwd_naive, results = 'hide'}
+for(K in c(1,5,16,20)){
+rmarkdown::render("sim02-aTPR-alpha24-new-benchmarks-GAM-1M.Rmd"
+                  , params = list(nickname = '1k'
+                                  ,n2= 1000
+                                  ,seed= 9283450
+                                  ,k=K
+                                  ,M = 25 )
+                  ,output_file = paste0("BenchmarkComparison-mean1M-",K,".html"))
+}
+```
+
+
+```{r outer_suppL1, results = 'hide'}
+for(K in c(2:4,6:15)){
+rmarkdown::render("sim02-aTPR-alpha24-new-benchmarks-GAM-1M.Rmd"
+                  , params = list(nickname = '1k'
+                                  ,n2= 1000
+                                  ,seed= 9283450
+                                  ,k=K
+                                  ,M = 25 )
+                  ,output_file = paste0("BenchmarkComparison-mean1M-",K,".html"))
+}
+```
+
+```{r outer_suppL2, results = 'hide'}
+for(K in c(17:19,21:30)){
+rmarkdown::render("sim02-aTPR-alpha24-new-benchmarks-GAM-1M.Rmd"
+                  , params = list(nickname = '1k'
+                                  ,n2= 1000
+                                  ,seed= 9283450
+                                  ,k=K
+                                  ,M = 25 )
+                  ,output_file = paste0("BenchmarkComparison-mean1M-",K,".html"))
+}
+```
+
+```{r outer_suppC1, results = 'hide'}
+for(K in 31:45){
+rmarkdown::render("sim02-aTPR-alpha24-new-benchmarks-GAM-1M.Rmd"
+                  , params = list(nickname = '1k'
+                                  ,n2= 1000
+                                  ,seed= 9283450
+                                  ,k=K 
+                                  ,M = 25 )
+                  ,output_file = paste0("BenchmarkComparison-mean1M-",K,".html"))
+}
+```
+
+```{r outer_suppC2, results = 'hide'}
+for(K in 46:60){
+rmarkdown::render("sim02-aTPR-alpha24-new-benchmarks-GAM-1M.Rmd"
+                  , params = list(nickname = '1k'
+                                  ,n2= 1000
+                                  ,seed= 9283450
+                                  ,k=K
+                                  ,M = 25 )
+                  ,output_file = paste0("BenchmarkComparison-mean1M-",K,".html"))
+}
+```
