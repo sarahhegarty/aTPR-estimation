@@ -25,5 +25,7 @@ The Palliative Connect dataset is derived from electronic health records data an
 
 ## Pseudodata
 A synthetic data set was generated to mimic the Palliative Connect dataset along with corresponding analytic files.
+  - Data Generation and Analysis code: Pseudodata-Generation-and-Analysis.Rmd
+  - Synthetic data: pseudodata-pallconnect.csv
  
 
