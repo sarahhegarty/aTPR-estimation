@@ -2,7 +2,7 @@
 R code for simulations evaluating the novel fairness metric, adjusted true positive rate proposed by Hegarty et al.
 
 ## aTPR illustration 
-Figure 1 illustrates the risk distribution issue. Code to reproduce this figure is provided in atpr-figure-1.Rmd
+Figure 1 illustrates the risk distribution issue. Code to reproduce this figure is provided in R1-atpr-figure-1.Rmd
 
 
 ## Simulation Studies
@@ -18,10 +18,10 @@ A smaller simulation study was conducted to explore the coverage of the confiden
 
 ## Real World Example
 The Palliative Connect dataset is derived from electronic health records data and cannot be publicly shared. However, the code use for analysis and figure generation is provided.
-  - Analysis files: rwd00 palliative connect - select data.Rmd + rwd03 palliative connect - adjusted - replicate orig.Rmd 
+  - Analysis files: rwd00 palliative connect - select data.Rmd + rwd03 palliative connect - adjusted - replicate orig-R1.Rmd 
   - Figure 3 code: R1-atpr-figure-3.Rmd
   - Table 1 code: R1-atpr-table-1.Rmd.
-  - Supplemental Figures 24-26: R1=Supplemental-RWD-DeltaPlots-by-tau.Rmd
+  - Supplemental Figures 24-26: R1-Supplemental-RWD-DeltaPlots-by-tau.Rmd
 
 ## Pseudodata
 A synthetic data set was generated to mimic the Palliative Connect dataset along with corresponding analytic files.
