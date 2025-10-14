@@ -7,7 +7,7 @@ Figure 1 illustrates the risk distribution issue. Code to reproduce this figure 
 
 ## Simulation Studies
 ### Primary Simulations
-The numerical studies in the paper can be reproduced by the Run-sims.Rmd file. This file calls on the sim01-aTPR-alpha24.Rmd files, simfuncs/dataGen.R, simfuncs/getTheoretical.R, and the R package "fairRisk" (available through github.com/sarahhegarty/fairRisk). 
+The numerical studies in the paper can be reproduced by the Run-sims.Rmd file. This file calls on the sim01-aTPR-alpha24.Rmd files, simfuncs/dataGen.R, simfuncs/getTheoretical.R, and the R package "fairRisk" (available through github.com/sarahhegarty/fairRisk). Large sample benchmark values using GAMs for interim estimation tasks are calculated in sim02-aTPR-alpha24-new-benchmarks-GAM-1M.Rmd and RUN-alt-benchmarks.Rmd.
 
 Code for reproducing the simulation figures are available:
   - Figure 2: R1-atpr-figure-2-with-fairRisk-withGAM-1Mmean.Rmd
