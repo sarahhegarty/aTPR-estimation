@@ -1,0 +1,101 @@
+---
+title: "Coverage - Large Sample"
+author: "Hegarty"
+date: "`r Sys.Date()`"
+output: html_document
+params:
+    k: 1
+    h: 'logit'
+    a2: 0
+    b2: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+timestart = Sys.time()
+simid = 'rev01-alpha24-1k'
+
+# Load packages
+library(tidyr)
+library(dplyr)
+library(stats)
+library(ggplot2)
+library(patchwork)
+library(kableExtra)
+
+library(microbenchmark) 
+library(parallel) 
+library(foreach)
+library(iterators) 
+library(doParallel)
+library(fairRisk)
+library(EnvStats)
+
+source('simfuncs/dataGen.R')
+
+alpha = c(2,4)
+beta= c(8,8)
+sigeps = c(0.1,0.1)
+theta.a1 = 0 # intercept
+theta.b1 = 1 # slope
+taus = seq(0.01,0.99,0.01)
+
+
+cloglog <- function(z){log(-log(1-z))}
+inv.cloglog <- function(z){1 - exp(-exp(z))}
+```     
+
+# Load Benchmarks
+```{r}
+bf = '/Users/hegarty/Library/CloudStorage/Box-Box/Research/Dissertation/12 Adjusted TPR/numerical/12.05.01/r1out/'
+
+load(paste0(bf,'dcomps-ref1-GAM-QQ-CF-setting-',params$k,'.RData'))
+bench <- dcomps_ref1 %>%
+                group_by(type, tau) %>%
+                summarize(delta.adj = mean(delta.adj)) %>%
+                mutate(ref = 1)
+```
+
+# Load bootstrapped intervals
+```{r}
+simcode = toupper(substr(params$h,1,1))
+load(paste0("diffout-",simid,"-",simcode,"01-",params$a2,"_",params$b2,".Rdata"))
+```
+
+# Coverage of Delta
+```{r}
+delta.boots <- diffout %>% 
+                filter(temp == "delta.adj") %>% 
+                mutate(tau = round(tau,2)) %>%
+                mutate(bl = -bootupper
+                       ,bu = -bootlower) %>%
+                left_join(bench %>% mutate(tau = round(tau,2)), by = join_by(tau)) %>%
+                mutate(coverage = if_else(bootlower <= delta.adj & delta.adj <= bootupper, 1, 0))
+  
+delta.boots %>%
+    filter(tau == 0.2) %>%
+    filter(mcrep <= 100) %>%
+    ggplot() + 
+    geom_pointrange(aes(mcrep, y = bootmean, ymin = bootlower, ymax= bootupper, color = factor(coverage)),size=0.1) + 
+    geom_point(aes(0, y = delta.adj),color='gold',size=2) + 
+    facet_wrap(~type.y) + 
+    theme_bw() +
+    coord_flip()
+
+dboots <- delta.boots %>%
+    group_by(tau, type.y) %>%
+    summarize(coverage = mean(coverage))
+              
+boot.cov <- dboots %>%
+  pivot_wider(id_cols = c(tau), names_from = type.y, values_from = coverage) %>%
+  mutate(setting = params$k, h = params$h, a2 = params$a2, b2 = params$b2)
+
+write.csv(boot.cov, file= paste0(bf,"Coverage-setting-",params$k,".csv"))
+boot.cov %>%
+  kbl(caption = "Delta Coverage") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
