@@ -1,0 +1,252 @@
+---
+title: "12 Adjusted TPR"
+subtitle: "aTPR - Biostatistics Figure 1 (R1)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(fairRisk)
+library(mgcv)
+library(EnvStats)
+library(KernSmooth)
+```
+
+```{r}
+set.seed(336)
+
+N = 10E6
+
+sigma = 0.1
+```
+
+# Define risk score as a function of pi.X plus random noise
+```{r}
+get_pir <- function(data, a, b){
+  # determine risk score based on calibration settings
+  df <- data %>%
+          mutate(a = a
+                 ,b = b
+                 ,logit.r = a + b * logit(pi.X) + eps
+                 ,r = expit(logit.r))
+  
+  # get true risk based on r (pi.r)
+  gam.fit <- with(df, mgcv:::gam(Y ~ s(logit.r, bs= 'cr'), family = 'binomial'))
+  df$pi.r.hat <- gam.fit$fitted.values
+  
+  # # estimate distribution of pi.r with beta distribution
+  # bparm.r <- EnvStats::ebeta(x = df %>% pull(pi.r.hat), method = 'mle')[["parameters"]]
+  # bparm.X <- EnvStats::beta(x = df %>% pull(pi.X), method = 'mle')[["parameters"]]
+  
+  # nonparametric density estimation of pi.r distribution
+  kdr <- KernSmooth::bkde(x = df %>% pull(pi.r.hat))
+  kdr <- data.frame(r.bin = kdr[["x"]]
+                  ,kdr = kdr[["y"]])
+
+  out <- list(df = df 
+              #shape.params.r = bparm.r, shape.params.X = bparm.X
+              , kdr=kdr)
+  
+  return(out)
+}
+```
+
+# Data Generation   
+## Group 1 (reference). 
+```{r}
+# Group 1
+df1 <- data.frame(s = 1, pi.X = rbeta(N, 2, 8), eps = rnorm(N,0,sigma))
+df1$Y <- rbinom(N, size = 1, prob = df1$pi.X)
+df1 <- get_pir(df1, a = 0, b = 1)
+```
+
+## Group 2 (same pi.X distribution)
+```{r}
+df2.eq <- data.frame(s = 2, pi.X = rbeta(N, 2, 8), eps = rnorm(N,0,sigma))
+df2.eq$Y <- rbinom(N, size = 1, prob = df2.eq$pi.X)
+df2.eq1 <- get_pir(df2.eq, a = 0, b = 1)
+df2.eq2 <- get_pir(df2.eq, a = 0, b = 0.8)
+df2.eq3 <- get_pir(df2.eq, a = -0.25, b = 1)
+df2.eq4 <- get_pir(df2.eq, a = -0.25, b = 0.8)
+```
+
+## Group 2 (different pi.X distribution)
+```{r}
+df2.uneq <- data.frame(s = 2, pi.X = rbeta(N, 4, 8), eps = rnorm(N,0,sigma))
+df2.uneq$Y <- rbinom(N, size = 1, prob = df2.uneq$pi.X)
+df2.uneq1 <- get_pir(df2.uneq, a = 0, b = 1)
+df2.uneq2 <- get_pir(df2.uneq, a = 0, b = 0.8)
+df2.uneq3 <- get_pir(df2.uneq, a = -0.25, b = 1)
+df2.uneq4 <- get_pir(df2.uneq, a = -0.25, b = 0.8)
+```
+
+## Stack equal and unequal versions
+```{r}
+df.eq <- df1[["df"]] %>%
+          bind_rows(df2.eq1[["df"]]) %>%
+          bind_rows(df2.eq2[["df"]]) %>%
+          bind_rows(df2.eq3[["df"]]) %>%
+          bind_rows(df2.eq4[["df"]])
+
+df.uneq <- df1[["df"]] %>%
+          bind_rows(df2.uneq1[["df"]]) %>%
+          bind_rows(df2.uneq2[["df"]]) %>%
+          bind_rows(df2.uneq3[["df"]]) %>%
+          bind_rows(df2.uneq4[["df"]])
+```
+
+# Figure Panels. 
+## Panel A. 
+```{r}
+cal.breaks = c("(0, 1)","(0, 0.8)", "(-0.25, 1)","(-0.25, 0.8)")
+cal.linetypes = c("solid","dotdash","twodash","dotted")
+
+group.breaks = c("1","2")
+group.colors = c("maroon","deepskyblue") 
+group.labels = c("Group 1","Group 2")
+
+strata.breaks = c("1-0-1","2-0-1", "2-0-0.8","2--0.25-1","2--0.25-0.8")
+strata.linetypes = c("solid","solid","dotdash","twodash","dotted")
+strata.colors = c("maroon","deepskyblue","deepskyblue","deepskyblue","deepskyblue")
+strata.labels = c("Group 1: (0,1)", "Group 2: (0,1)", "Group 2: (0,0.8)", "Group 2: (-0.25,1)", "Group 2: (-0.25,0.8)")
+
+
+A1 <- df.eq %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(r, pi.r.hat,group = paste(s,a,b), color = factor(s), linetype=paste0("(",a,", ",b,")"))) +
+    geom_smooth(se = FALSE, linewidth = 0.5) + 
+    theme_bw() +
+    ylab("P(Y = 1 | R)") +
+    xlab("R") +
+    scale_linetype_manual(name = "Calibration Parameters"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes) +
+    scale_color_manual(name = "Group"
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("A1")
+
+A2 <- df.uneq %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(r, pi.r.hat, group = paste(s,a,b), color = factor(s), linetype=paste0("(",a,", ",b,")"))) +
+    geom_smooth(se = FALSE, linewidth = 0.5) + 
+    theme_bw() +
+    ylab("P(Y = 1 | R)") +
+    xlab("R") +
+    scale_linetype_manual(name = "Calibration Parameters"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes) +
+    scale_color_manual(name = "Group"
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("A2")
+
+#(A1 | A2) + plot_layout(guides = 'collect')
+```
+## Panel B. 
+```{r}
+B1 <- df.eq %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(pi.r.hat, group = paste(s,a,b), color = factor(s), linetype=paste0("(",a,", ",b,")"))) +
+    geom_density(show.legend = FALSE) + 
+    theme_bw() +
+    xlab("P(Y = 1 | R)") +
+    ylab("Density") +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes) +
+    scale_color_manual(name = ""
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("B1")
+
+B2 <- df.uneq %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(pi.r.hat, group = paste(s,a,b), color = factor(s), linetype=paste0("(",a,", ",b,")"))) +
+    geom_density(show.legend = FALSE) + 
+    theme_bw() +
+    xlab("P(Y = 1 | R)") +
+    ylab("Density") +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes) +
+    scale_color_manual(name = ""
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("B2")
+
+#(B1 | B2) + plot_layout(guides = 'collect')
+```
+
+## Panel C. 
+```{r}
+TPR.eq <- naiveTPR(data = df.eq %>% mutate(strata = paste0(s,"-",a,"-",b)), risk = r, response = Y, groupvar = strata, taus = seq(0.01,0.99,0.01))
+
+dTPR.eq <- TPR.eq[["TPR"]] %>% filter(substr(strata,1,1) == "1") %>%
+              rename(TPR.ref = TPR
+                     ,strata.ref = strata) %>%
+              left_join(TPR.eq[["TPR"]] %>% filter(!substr(strata,1,1) == "1")
+                        ,by = join_by(tau)) %>%
+              mutate(dTPR = TPR - TPR.ref)
+
+
+TPR.uneq <- naiveTPR(data = df.uneq %>% mutate(strata = paste0(s,"-",a,"-",b)), risk = r, response = Y, groupvar = strata, taus = seq(0.01,0.99,0.01))
+
+dTPR.uneq <- TPR.uneq[["TPR"]] %>% filter(substr(strata,1,1) == "1") %>%
+              rename(TPR.ref = TPR
+                     ,strata.ref = strata) %>%
+              left_join(TPR.uneq[["TPR"]] %>% filter(!substr(strata,1,1) == "1")
+                        ,by = join_by(tau)) %>%
+              mutate(dTPR = TPR- TPR.ref)
+```
+
+
+```{r}
+C1 <- dTPR.eq %>%
+    ggplot(aes(tau, dTPR, group = strata, linetype=strata)) +
+    geom_smooth(se = FALSE, show.legend = FALSE, linewidth = 0.5, color='black') + 
+    theme_bw() +
+    xlab("Decision Threshold, tau") +
+    ylab("Difference in TPR") +
+    geom_hline(yintercept = 0, linetype = 'dotted',color='grey') +
+    ylim(-0.4,0.4) +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks = strata.breaks
+                          ,values = strata.linetypes
+                          ,label = strata.labels) +
+    ggtitle("C1") 
+
+C2 <- dTPR.uneq %>%
+   ggplot(aes(tau, dTPR, group = strata, linetype=strata)) +
+    geom_smooth(se = FALSE, show.legend = FALSE, linewidth = 0.5,color='black') + 
+    theme_bw() +
+    xlab("Decision Threshold, tau") +
+    ylab("Difference in TPR") +
+    geom_hline(yintercept = 0, linetype = 'dotted',color='grey') +
+    ylim(-0.4,0.4) +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks = strata.breaks
+                          ,values = strata.linetypes
+                          ,label = strata.labels) +
+    ggtitle("C2") 
+
+(C1 | C2) + plot_layout(guides = 'collect')
+```
+# Paper Figure 1
+```{r}
+( (A1 | A2) / (B1 | B2) / (C1 | C2) ) + plot_layout(guides = 'collect') & theme(legend.position = 'bottom'
+                                                                                , legend.direction = 'horizontal'
+                                                                                , legend.box = 'vertical'
+                                                                                , legend.spacing.y = unit(1,"pt"))
+ggsave(file="R1-aTPR-illustration-5panel.eps",dpi=300,height=7,width=6) 
+```

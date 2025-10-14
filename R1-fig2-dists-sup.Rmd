@@ -1,0 +1,257 @@
+---
+title: "12 Adjusted TPR"
+subtitle: "aTPR - Biostatistics Supplemental Figure of Distributions (R1)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(fairRisk)
+library(mgcv)
+library(EnvStats)
+library(KernSmooth)
+```
+
+```{r}
+set.seed(2039842)
+
+N = 10E6
+
+sigma = 0.1
+
+cloglog <- function(x){
+    log(-log(1-x))
+}
+```
+
+# Define risk score as a function of pi.X plus random noise
+```{r}
+get_pir <- function(data, a, b, h = 'logit'){
+  # determine risk score based on calibration settings
+  if(h == 'logit'){
+  df <- data %>%
+          mutate(a = a
+                 ,b = b
+                 ,h = h
+                 ,logit.r = a + b * logit(pi.X) + eps
+                 ,r = expit(logit.r))
+  }else if(h == "cloglog"){
+    df <- data %>%
+          mutate(a = a
+                 ,b = b
+                 ,h = h
+                 ,logit.r = a + b * cloglog(pi.X) + eps
+                 ,r = expit(logit.r))
+  }
+  # get true risk based on r (pi.r)
+  gam.fit <- with(df, mgcv:::gam(Y ~ s(logit.r, bs= 'cr'), family = 'binomial'))
+  df$pi.r.hat <- gam.fit$fitted.values
+  
+  # # estimate distribution of pi.r with beta distribution
+  # bparm.r <- EnvStats::ebeta(x = df %>% pull(pi.r.hat), method = 'mle')[["parameters"]]
+  # bparm.X <- EnvStats::beta(x = df %>% pull(pi.X), method = 'mle')[["parameters"]]
+  
+  # nonparametric density estimation of pi.r distribution
+  kdr <- KernSmooth::bkde(x = df %>% pull(pi.r.hat))
+  kdr <- data.frame(r.bin = kdr[["x"]]
+                  ,kdr = kdr[["y"]])
+
+  out <- list(df = df 
+              #shape.params.r = bparm.r, shape.params.X = bparm.X
+              , kdr=kdr)
+  
+  return(out)
+}
+```
+
+# Data Generation   
+## Group 1 (reference). 
+```{r}
+# Group 1
+df1 <- data.frame(s = 1, pi.X = rbeta(N, 2, 8), eps = rnorm(N,0,sigma))
+df1$Y <- rbinom(N, size = 1, prob = df1$pi.X)
+df1.L <- get_pir(df1, a = 0, b = 1, h = 'logit')
+df1.C <- get_pir(df1, a = 0, b = 1, h = 'cloglog')
+```
+
+## Group 2 (different pi.X distribution)
+```{r}
+df2.uneq <- data.frame(s = 2, pi.X = rbeta(N, 4, 8), eps = rnorm(N,0,sigma))
+df2.uneq$Y <- rbinom(N, size = 1, prob = df2.uneq$pi.X)
+df2.L1 <- get_pir(df2.uneq, a = 0, b = 1, h = 'logit')
+df2.L2 <- get_pir(df2.uneq, a = 0.5, b = 1, h = 'logit')
+df2.C1 <- get_pir(df2.uneq, a = 0, b = 1, h = 'cloglog')
+df2.C2 <- get_pir(df2.uneq, a = 0.5, b = 1, h = 'cloglog')
+```
+
+## Stack equal and unequal versions
+```{r}
+L1 <- df1.L[["df"]] %>% bind_rows(df2.L1[["df"]])
+L2 <- df1.L[["df"]] %>% bind_rows(df2.L2[["df"]])
+C1 <- df1.C[["df"]] %>% bind_rows(df2.C1[["df"]])
+C2 <- df1.C[["df"]] %>% bind_rows(df2.C2[["df"]])
+```
+
+# Figure Panels. 
+## Panel A. 
+```{r}
+cal.breaks = c("1, (0, 1)","2, (0.5, 1)", "2, (0, 1)")
+cal.labels = c("(0, 1)","(0.5, 1)", "(0, 1)")
+cal.linetypes = c("solid","dashed","dashed")
+
+group.breaks = c("1","2")
+group.colors = c("maroon","deepskyblue") 
+group.labels = c("Group 1","Group 2")
+
+L1.cal <- L1 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(r, pi.r.hat,group = s, color = factor(s), linetype=paste0(s,", (",a,", ",b,")"))) +
+    geom_smooth(se = FALSE, linewidth = 0.5) + 
+    theme_bw() +
+    ylab("P(Y = 1 | R)") +
+    xlab("R") +
+    scale_linetype_manual(name = "Calibration Parameters"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = "Group"
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) 
+
+L2.cal <- L2 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(r, pi.r.hat,group = s, color = factor(s), linetype=paste0(s,", (",a,", ",b,")"))) +
+    geom_smooth(se = FALSE, linewidth = 0.5) + 
+    theme_bw() +
+    ylab("P(Y = 1 | R)") +
+    xlab("R") +
+    scale_linetype_manual(name = "Calibration Parameters"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = "Group"
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) 
+
+
+C1.cal <- C1 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(r, pi.r.hat,group = s, color = factor(s), linetype=paste0(s,", (",a,", ",b,")"))) +
+    geom_smooth(se = FALSE, linewidth = 0.5) + 
+    theme_bw() +
+    ylab("P(Y = 1 | R)") +
+    xlab("R") +
+    scale_linetype_manual(name = "Calibration Parameters"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = "Group"
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) 
+
+C2.cal <- C2 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(r, pi.r.hat,group = s, color = factor(s), linetype=paste0(s,", (",a,", ",b,")"))) +
+    geom_smooth(se = FALSE, linewidth = 0.5) + 
+    theme_bw() +
+    ylab("P(Y = 1 | R)") +
+    xlab("R") +
+    scale_linetype_manual(name = "Calibration Parameters"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = "Group"
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels)
+```
+
+## Panel B. 
+```{r}
+L1.dist <- L1 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(pi.r.hat, group = paste(s,a,b), color = factor(s))) +
+    geom_density(show.legend = FALSE) + 
+    theme_bw() +
+    xlab("P(Y = 1 | R)") +
+    ylab("Density") +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = ""
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("L1")
+
+L1.dist + L1.cal
+
+
+L2.dist <- L2 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(pi.r.hat, group = paste(s,a,b), color = factor(s))) +
+    geom_density(show.legend = FALSE) + 
+    theme_bw() +
+    xlab("P(Y = 1 | R)") +
+    ylab("Density") +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = ""
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("L2")
+
+C1.dist <- C1 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(pi.r.hat, group = paste(s,a,b), color = factor(s))) +
+    geom_density(show.legend = FALSE) + 
+    theme_bw() +
+    xlab("P(Y = 1 | R)") +
+    ylab("Density") +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks =cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = ""
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("C1")
+
+C2.dist <- C2 %>%
+    slice_sample(prop = 0.1) %>%
+    ggplot(aes(pi.r.hat, group = paste(s,a,b), color = factor(s))) +
+    geom_density(show.legend = FALSE) + 
+    theme_bw() +
+    xlab("P(Y = 1 | R)") +
+    ylab("Density") +
+    scale_linetype_manual(name = "Group / Calibration"
+                          ,breaks = cal.breaks
+                          ,values = cal.linetypes
+                          ,labels = cal.labels) +
+    scale_color_manual(name = ""
+                       ,breaks = group.breaks
+                       ,values = group.colors,
+                       ,labels = group.labels) +
+    ggtitle("C2")
+```
+
+# Paper Figure 1
+```{r}
+( (L1.dist | L1.cal) / (L2.dist | L2.cal) / (C1.dist | C1.cal) / (C2.dist | C2.cal) )
+
+ggsave(file="R1-aTPR-fig2-sup.eps",dpi=300,height=7,width=6) 
+```

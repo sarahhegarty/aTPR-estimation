@@ -1,0 +1,184 @@
+---
+title: "12 Adjusted TPR"
+subtitle: "aTPR - PNAS manuscript (revision), Variance Supplement"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, include= FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(ggh4x)
+library(kableExtra)
+
+#folder = '/Users/Sarah/Box/Research/Dissertation/12 Adjusted TPR/numerical/12.05.01/simout/'
+folder = '/Users/hegarty/Library/CloudStorage/Box-Box/Research/Dissertation/12 Adjusted TPR/numerical/12.05.01/simout/'
+n = '1k' 
+simlab = paste0('sim01-aTPR-alpha24-',n)
+```
+
+
+# Read in simulation output data
+```{r}
+load(paste0(folder,simlab,'_settings.Rdata'))
+# Load Results from fairRisk package
+diffs <- NULL
+benchN <- NULL
+bench1M <- NULL
+
+for(k in c(1,5,16,20)){
+  load(paste0(folder,simlab,'_setting_',k,'_with_benchmarks.Rdata'))
+  
+  settings <- out$settings
+  diffs <- diffs %>%
+                  bind_rows(out[["df_diffs (refgp = 1)"]] %>%
+                              mutate(setting_id = k
+                                     ,n1 = settings$n[1]
+                                     ,n2 = settings$n[2]
+                                     ,alpha1 = settings$alpha[1]
+                                     ,alpha2 = settings$alpha[2]
+                                     ,beta1 = settings$beta[1]
+                                     ,beta2 = settings$beta[2]
+                                     ,theta.a1 = settings$theta.a[1]
+                                     ,theta.a2 = settings$theta.a[2]
+                                     ,theta.b1 = settings$theta.b[1]
+                                     ,theta.b2 = settings$theta.b[2]
+                                     ,sigeps1 = settings$sigeps[1]
+                                     ,sigeps2 = settings$sigeps[2]
+                                     ,h1 = settings$h[1]
+                                     ,h2 = settings$h[2]
+                            )
+                    )
+  
+  benchN <- benchN %>%
+                  bind_rows(out[["df_benchN (refgp = 1)"]] %>% 
+                              mutate(setting_id = k
+                                     ,n1 = settings$n[1]
+                                     ,n2 = settings$n[2]
+                                     ,alpha1 = settings$alpha[1]
+                                     ,alpha2 = settings$alpha[2]
+                                     ,beta1 = settings$beta[1]
+                                     ,beta2 = settings$beta[2]
+                                     ,theta.a1 = settings$theta.a[1]
+                                     ,theta.a2 = settings$theta.a[2]
+                                     ,theta.b1 = settings$theta.b[1]
+                                     ,theta.b2 = settings$theta.b[2]
+                                     ,sigeps1 = settings$sigeps[1]
+                                     ,sigeps2 = settings$sigeps[2]
+                                     ,h1 = settings$h[1]
+                                     ,h2 = settings$h[2]
+                            ))
+  
+  bench1M <- bench1M %>%
+                  bind_rows(out[["df_bench1M (refgp = 1)"]]  %>%
+                              mutate(setting_id = k
+                                     ,n1 = settings$n[1]
+                                     ,n2 = settings$n[2]
+                                     ,alpha1 = settings$alpha[1]
+                                     ,alpha2 = settings$alpha[2]
+                                     ,beta1 = settings$beta[1]
+                                     ,beta2 = settings$beta[2]
+                                     ,theta.a1 = settings$theta.a[1]
+                                     ,theta.a2 = settings$theta.a[2]
+                                     ,theta.b1 = settings$theta.b[1]
+                                     ,theta.b2 = settings$theta.b[2]
+                                     ,sigeps1 = settings$sigeps[1]
+                                     ,sigeps2 = settings$sigeps[2]
+                                     ,h1 = settings$h[1]
+                                     ,h2 = settings$h[2]
+                            )
+            )
+
+}
+
+```
+
+
+```{r}
+(mcvar <- diffs %>%
+    group_by(setting_id, tau, est, cal, den) %>%
+    summarize(var.aTPR2 = var(aTPR2)
+              ,var.delta = var(delta)) %>%
+    filter(cal == 'qlogit', den == 'qlogit') %>%
+    filter(tau %in% seq(0.1,0.6,0.1)))
+```
+Bootstraps
+```{r}
+cluster = '/Volumes/home_hegarty/D12-aTPR/biostat-R1/'
+
+
+load(paste0(cluster,'diffout-rev01-alpha24-1k-L01-0_1.RData')) 
+bootout <- diffout %>% mutate(setting_id = 1)
+load(paste0(cluster,'diffout-rev01-alpha24-1k-L01-0.5_1.RData'))
+bootout <- bootout %>%
+              bind_rows(diffout %>% mutate(setting_id = 5))
+load(paste0(cluster,'diffout-rev01-alpha24-1k-C01-0_1.RData'))
+bootout <- bootout %>%
+              bind_rows(diffout %>% mutate(setting_id = 16))
+load(paste0(cluster,'diffout-rev01-alpha24-1k-C01-0.5_1.RData'))
+bootout <- bootout %>%
+              bind_rows(diffout %>% mutate(setting_id = 20))
+
+
+(bootvar <- bootout %>%
+    filter(temp %in% c("aTPR2","delta.adj")) %>%
+    dplyr::select(setting_id, mcrep, tau, temp, bootse) %>%
+    pivot_wider(id_cols = c(setting_id, tau, mcrep)
+                , names_from = temp, values_from = bootse)%>%
+    group_by(setting_id, tau) %>%
+    summarize(bootvar.aTPR2 = mean(aTPR2**2)
+              ,bootvar.delta = mean(delta.adj**2)))
+
+```
+
+```{r}
+mcvar %>% 
+  ungroup() %>%
+  left_join(bootvar, by = join_by(setting_id, tau)) %>%
+  select(setting_id, tau, var.aTPR2, bootvar.aTPR2, var.delta, bootvar.delta) %>%
+  kbl(digits = 4) %>%
+  kable_classic()
+```
+
+
+```{r}
+bootout2 <-bootout %>%
+    left_join(mcvar %>%
+                  ungroup() %>%
+                  dplyr::select(setting_id, tau, var.aTPR2, var.delta)
+              ,by = join_by(tau, setting_id))
+
+bootout2 %>%
+    filter(temp %in% c("delta.adj")) %>%
+    filter(tau %in% seq(0.1,0.6,0.1)) %>%
+    mutate(bootvar = bootse**2) %>%
+    ggplot() + 
+    geom_jitter(aes(tau, bootvar)) +
+    #geom_point(aes(tau, var.aTPR2),color='green') + 
+    geom_point(aes(tau, var.delta),color='gold') + 
+    facet_wrap(~setting_id) +
+    theme_bw() +
+    ggtitle("Bootstrap variance vs. MC variance of Delta.adj")
+
+
+bootout2 %>%
+    filter(temp %in% c("aTPR2")) %>%
+    filter(tau %in% seq(0.1,0.6,0.1)) %>%
+    mutate(bootvar = bootse**2) %>%
+    ggplot() + 
+    geom_jitter(aes(tau, bootvar)) +
+    geom_point(aes(tau, var.aTPR2),color='green') + 
+   # geom_point(aes(tau, var.delta),color='gold') + 
+    facet_wrap(~setting_id) +
+    theme_bw() +
+    ggtitle("Bootstrap variance vs. MC variance of aTPR2")
+
+```
+
+
