@@ -1,6 +1,6 @@
 ---
 title: "12 Adjusted TPR"
-subtitle: "aTPR - PNAS manuscript (revision) Psuedodata Generation & Analysis"
+subtitle: "aTPR - (revision) Pseudodata Generation & Analysis"
 output: html_document
 ---
 
@@ -203,7 +203,7 @@ panelB <- ex.cal$caldf %>%
   mutate(s = if_else(s == 'M', 'Male', 'Female')) %>%
   ggplot(aes(rs.gX, group = s,color=s)) +
   geom_density() + 
-  xlab(expression(paste('Re-calibrated Risk Score, ',r^s,'{g(X)}'))) +
+  xlab(expression(paste('Re-calibrated Risk Score, ',pi[s]))) +
   ylab('Density') +
   ggtitle("B") +
   theme_bw()+ 
@@ -233,7 +233,7 @@ panelA <- pc.cal %>%
     ggplot(aes(pred,y.obs,group=s,color=s)) +
     geom_point(show.legend = FALSE)+
     geom_abline(slope=1,intercept=0,linetype = 'dashed') +
-    xlab('Risk Score, g(X)') +
+    xlab('Risk Score, R') +
     ylab("Observed Event Rate") +
     scale_color_manual(name='Sex',values = c('M' = 'deepskyblue', 'F' = 'maroon')) +
   theme_bw()+ 
@@ -254,7 +254,7 @@ figout = outfolder
         ,legend.direction = 'horizontal'
         ,legend.box ='vertical'
         ,legend.spacing.y = unit(1,"pt"))
-ggsave(file=paste0(figout,"Psuedo-PC-Gender-tripanel-PNAS-bottomlegend2.eps"),dpi=300,height=6,width=6)
+ggsave(file=paste0(figout,"Pseudo-PC-Gender-tripanel.eps"),dpi=300,height=6,width=6)
 ```
 
 
@@ -532,7 +532,7 @@ save(genderrace.boot.comp, file = paste0(outfolder,simlab,'genderrace.RData'))
 
 # TABLE 1
 ## Make Supplemental Table - Gender
-```{r supfig.gender}
+```{r suptab.gender}
 # Read in bootstrapped estimates
 load(paste0(outfolder,simlab,'gender.Rdata'))
 
@@ -573,7 +573,7 @@ diffs.gender.sum <- diffs.gender %>%
 ```
 
 ## Make Supplemental Table - Race
-```{r supfig.race}
+```{r suptab.race}
 # Read in bootstrapped estimates
 load(paste0(outfolder,simlab,'race.Rdata'))
 
@@ -615,7 +615,7 @@ diffs.race.sum <- diffs.race %>%
 ```
 
 ## Make Supplemental Figure - Gender x Race
-```{r supfig.genderrace}
+```{r suptab.genderrace}
 # Read in bootstrapped estimates
 load(paste0(outfolder,simlab,'genderrace.Rdata'))
 
