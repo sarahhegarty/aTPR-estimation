@@ -140,8 +140,8 @@ shortstack <- stack.sum %>%
      mutate(alab = factor(a2,levels = c("-0.5","-0.25","0","0.25","0.5")
                              ,labels = c("a[2]: -0.5","a[2]: -0.25","a[2]: 0","a[2]: 0.25","a[2]: 0.5"))
              ,blab = paste0("b[2]: ",b2) 
-             ,Setting = factor(setting_id, levels = c(1,5,16,20), labels = c("L1","L2","C1","C2"))
-            ,Reference =refgp  )
+             ,Setting = factor(setting_id, levels = c(1,5,16,20), labels =c("Fair-1","Unfair-1","Fair-2","Unfair-2"))
+            ,Reference =factor(refgp, levels = c(1,2), labels = c("Reference: 1", "Reference: 2"))  )
 
 shortbench1M <- bench1Mgam%>%
      filter(tau == 0.2) %>%
@@ -155,8 +155,8 @@ shortbench1M <- bench1Mgam%>%
    mutate(alab = factor(a2,levels = c("-0.5","-0.25","0","0.25","0.5")
                              ,labels = c("a[2]: -0.5","a[2]: -0.25","a[2]: 0","a[2]: 0.25","a[2]: 0.5"))
           ,blab = paste0("b[2]: ",b2)
-          ,Setting = factor(setting_id, levels = c(1,5,16,20), labels = c("L1","L2","C1","C2"))
-          ,Reference =ref )
+          ,Setting = factor(setting_id, levels = c(1,5,16,20), labels = c("Fair-1","Unfair-1","Fair-2","Unfair-2"))
+          ,Reference =factor(ref, levels = c(1,2), labels = c("Reference: 1", "Reference: 2")) )
 ```
 
 
@@ -172,7 +172,7 @@ ggplot() +
       theme_bw() + 
       scale_color_manual(name='Estimation Method',values = c('Adjusted' = 'black', 'Naive' = 'maroon',  ' Benchmark' = 'deepskyblue')) +
       scale_linetype_manual(name='Estimation Method',values = c('Adjusted' = 'solid', 'Naive' = 'solid', ' Benchmark' = 'solid'))  +
-      facet_grid(Setting ~ Reference, labeller = label_both) +
+      facet_grid(Setting ~ Reference) +
       theme(legend.position="bottom") 
 
 ggsave(paste0("R1-dTPR-Forest_",simlab,"-8panel-GAMmean.eps"),height=6.5,width=6, dpi = 300)
