@@ -816,7 +816,7 @@ diffs.gender.sum %>%
       theme(legend.position="bottom")
 
 # Save plot
-ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"gender.png"),height=4,width=6, dpi = 300)
+ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"gender.eps"),height=4,width=6, dpi = 300)
 ```
 
 ## Make Supplemental Figure - Race
@@ -869,7 +869,7 @@ diffs.race.sum %>%
       theme(legend.position="bottom")
 
 # Save plot
-ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"race.png"),height=4,width=6, dpi = 300)
+ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"race.eps"),height=4,width=6, dpi = 300)
 ```
 
 
@@ -923,5 +923,5 @@ diffs.genderrace.sum %>%
       theme(legend.position="bottom")
 
 # Save plot
-ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"genderrace.png"),height=8,width=6, dpi = 300)
+ggsave(paste0("pseudo-figs/dTPR-Forest_",simlab,"genderrace.eps"),height=8,width=6, dpi = 300)
 ```
